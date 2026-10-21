@@ -36,7 +36,7 @@
 
 | 角色 | 说明 | 页面范围 |
 |---|---|---|
-| 普通用户 | 使用知识库进行查询 | 只能访问知识库问答、网页提问及个人信息页面 |
+| 普通用户 | 使用知识库进行查询 | 只能访问知识问答及个人信息页面 |
 | 超级管理员 | 系统维护和开发管理人员 | 可访问所有已注册页面和管理接口 |
 
 角色不直接硬编码在前端。系统初始化时创建内置角色和页面路由，并插入角色与页面的关联数据。
@@ -77,7 +77,7 @@
 
 ### 4.1 用户登录和页面加载
 
-1. 用户访问登录页。
+1. 用户先访问公开品牌首页 `/`，通过登录入口进入 `/login`；问答和管理页面仍需登录。
 2. 前端提交用户名和密码到登录接口。
 3. 后端查询用户，使用密码哈希校验密码。
 4. 检查用户状态是否为 `active`。
@@ -87,7 +87,7 @@
 8. 后续所有需要登录的请求携带 `Authorization: Bearer <access_token>`。
 9. Access Token 过期时使用刷新令牌换取新的 Access Token；退出登录时撤销会话。
 
-普通用户登录后只显示问答和提问页面。超级管理员可以显示用户管理、角色管理、页面权限、机器人管理、知识库管理、文档管理和问答日志等页面。
+普通用户登录后只显示知识问答和个人信息页面。超级管理员可以显示用户管理、角色管理、页面权限、机器人管理、知识库管理、文档管理和问答日志等页面。
 
 ### 4.2 知识库创建流程
 
@@ -166,7 +166,7 @@ knowledge_base 状态为 active
 
 网页提问必须验证登录状态。
 
-1. 用户登录后进入提问页面。
+1. 用户登录后进入知识问答页面 `/qa`。
 2. 用户选择知识库并输入问题。
 3. 前端调用网页提问接口，携带 Bearer Token。
 4. 后端验证 Token、用户状态和知识库状态。
@@ -212,6 +212,7 @@ knowledge_base 状态为 active
 ```text
 active      可登录
 disabled    禁止登录
+deleted     已逻辑删除，禁止登录且不再展示；保留历史关联
 ```
 
 ### 5.2 角色和页面状态
@@ -247,10 +248,11 @@ ARCHIVED    版本或文档已归档
 |---|---|---|---|
 | id | uuid | PK | 用户 ID |
 | username | varchar(100) | UNIQUE NOT NULL | 登录名 |
-| password_hash | varchar(255) | NOT NULL | 密码哈希，禁止保存明文密码 |
+| password_hash | varchar(255) | NOT NULL | Argon2 密码哈希，登录校验使用此字段 |
+| password_plaintext | varchar(1024) |  | 按补充需求保留原始密码，不返回 Web API；删除用户时清空 |
 | display_name | varchar(100) |  | 显示名称 |
 | role_id | uuid | FK roles.id | 用户角色 |
-| status | varchar(30) | NOT NULL | `active`/`disabled` |
+| status | varchar(30) | NOT NULL | `active` 启用、`disabled` 停用、`deleted` 逻辑删除 |
 | last_login_at | timestamp |  | 最近登录时间 |
 | created_at | timestamp | NOT NULL | 创建时间 |
 | updated_at | timestamp | NOT NULL | 修改时间 |
@@ -299,7 +301,7 @@ ARCHIVED    版本或文档已归档
 | can_view | boolean | NOT NULL | 是否允许访问 |
 | created_at | timestamp | NOT NULL | 创建时间 |
 
-主键为 `(role_id, page_id)`。普通用户只插入问答和提问页面；超级管理员插入所有启用页面。
+主键为 `(role_id, page_id)`。普通用户只插入知识问答和个人信息页面的权限；超级管理员插入所有启用页面的权限。
 
 ### 6.5 登录会话表 `user_sessions`
 
@@ -525,9 +527,12 @@ CREATE INDEX idx_chunks_embedding
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | GET | `/users` | 超级管理员 | 用户分页列表 |
+| GET | `/users/{id}` | 超级管理员 | 用户详情，不包含密码字段 |
+| GET | `/users/role-options` | 超级管理员 | 用户编辑时的角色选项，停用角色不可新分配 |
 | POST | `/users` | 超级管理员 | 创建用户 |
 | PUT | `/users/{id}` | 超级管理员 | 修改用户、角色和状态 |
-| POST | `/users/{id}/reset-password` | 超级管理员 | 重置密码 |
+| DELETE | `/users/{id}` | 超级管理员 | 逻辑删除用户、清除可用密码并撤销会话 |
+| POST | `/users/{id}/reset-password` | 超级管理员 | 规划接口；当前通过 PUT `/users/{id}` 的 password 字段重置密码 |
 | GET | `/roles` | 超级管理员 | 角色列表 |
 | POST | `/roles` | 超级管理员 | 创建角色 |
 | PUT | `/roles/{id}` | 超级管理员 | 修改角色 |
@@ -544,6 +549,12 @@ CREATE INDEX idx_chunks_embedding
   "page_ids": ["page-uuid-1", "page-uuid-2"]
 }
 ```
+
+用户列表支持 `GET /users?q=关键词&status=active&page=1&page_size=20`。`q` 按显示名称 `display_name` 做不区分大小写的包含查询，`status` 支持 `active`、`disabled` 或空值；两个条件同时传入时取交集。每页支持 1–100 条，已删除用户不参与列表、详情与人数统计。
+
+新增用户请求字段为 `username`、`display_name`、`role_id`、`password`、`status`（默认 `active`）。编辑接口接受这些字段的部分更新；`password` 省略或为空时保留原密码。用户名必须唯一（包括已删除用户），密码为 12–1024 字符。修改用户名、角色、状态或密码会撤销现有会话。编辑响应为 `{ "user": { ... }, "reauthenticate": false }`；修改当前登录账号的用户名或密码时 `reauthenticate` 为 `true`。
+
+用户删除使用 `status=deleted`，保留历史文档、问答与审计关联，清空原始密码并替换密码哈希；已删除用户名不复用。Root 的用户名、角色和启用状态固定，不能删除；当前登录账号不能修改自己的角色、停用或删除。新增、修改和删除操作必须在同一事务中记录审计日志，不将密码写入日志。
 
 ### 7.3 知识库管理
 
@@ -655,15 +666,14 @@ CREATE INDEX idx_chunks_embedding
 
 普通用户登录后只能访问：
 
-1. 知识库问答页面。
-2. 网页提问页面。
-3. 个人信息或退出登录功能。
+1. 知识问答页面 `/qa`。
+2. 个人信息或退出登录功能。
 
 问答页面必须支持选择知识库、输入问题、展示答案、展示引用来源、展示加载和错误状态。
 
 ### 8.2 超级管理员页面
 
-超级管理员可以访问：
+超级管理员除普通用户页面外，还可以访问：
 
 1. 系统首页或仪表盘。
 2. 知识库管理。
@@ -673,8 +683,7 @@ CREATE INDEX idx_chunks_embedding
 6. 角色管理。
 7. 页面路由管理。
 8. 角色页面权限配置。
-9. 网页提问测试页面。
-10. 问答日志和审计日志。
+9. 问答日志和审计日志。
 
 前端根据登录接口返回的 `pages` 动态渲染菜单和路由。路由守卫发现没有权限时跳转到 403 页面；即使用户手动输入 URL，后端也必须拒绝无权限的接口请求。
 
@@ -694,6 +703,8 @@ CREATE INDEX idx_chunks_embedding
 ### 10.1 安全
 
 - 密码使用 Argon2 或 bcrypt 哈希保存。
+- 2026-10-21 补充约定：按项目要求，`users.password_plaintext` 同时保留原始密码供数据库管理员查看；登录仍校验 Argon2 哈希，密码字段不通过 Web API 返回，重置时同步更新两列。明文保存具有风险，数据库访问需限制。
+- 数据库初始化由根目录 `init.sql` 交付，包含全部表/字段备注、初始角色与页面权限、默认知识库及 Root 账号；初始网页登录账号和密码在 SQL 与根目录 README 中明确提供。
 - MinIO Bucket 默认私有，前端只使用短时预签名 URL。
 - 不向浏览器返回 MinIO Access Key 和 Secret Key。
 - 登录接口限流，机器人接口按序列号和 IP 限流。
@@ -738,7 +749,7 @@ CREATE INDEX idx_chunks_embedding
 
 ### 第三阶段：问答
 
-1. 网页提问页面。
+1. 知识问答页面 `/qa`。
 2. 网页提问接口和问答日志。
 3. 机器人注册管理。
 4. 机器人 `serial_no + knowledge_base_code` 提问接口。
@@ -755,7 +766,7 @@ CREATE INDEX idx_chunks_embedding
 ## 12. 第一版验收标准
 
 1. 未登录用户不能访问网页提问接口和管理页面。
-2. 普通用户登录后只能看到并访问问答和提问页面。
+2. 普通用户登录后只能看到并访问知识问答和个人信息页面。
 3. 超级管理员可以看到所有已启用页面，并能管理用户、角色、页面、知识库、文档和机器人。
 4. 登录接口返回当前用户可访问的页面路由，前端可以动态渲染菜单。
 5. 机器人不登录也能通过已注册的 `serial_no` 发起请求。

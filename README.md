@@ -1,0 +1,277 @@
+# 跨维智能知识平台
+
+Vue 3 + Element Plus + Flask 的知识库管理系统。当前开发分支为 `dev_wangjingyi`。
+
+首页参考 [跨维智能官网](https://www.dexforce.com/) 的黑、白、橙色风格，主色为 `#F68B00`，使用官网原始 Logo。访问顺序为：**首页 → 登录 → 按角色权限进入工作空间**。
+
+## 1. 项目结构
+
+```text
+knowledge_management_system/
+├── README.md                 # 本文件：初始化和运行说明
+├── init.sql                  # 完整数据库结构、字段备注和初始化数据
+├── knowledge_back/
+│   ├── app/                  # Flask API、认证、权限、模型
+│   ├── migrations/           # Alembic 后续增量迁移
+│   ├── tests/                # 后端测试
+│   ├── pyproject.toml        # Python 依赖
+│   ├── uv.lock               # 后端依赖锁定
+│   ├── .env.example          # 后端配置模板
+│   ├── docker-compose.local.yml
+│   └── docs/                 # 业务需求和开发环境说明
+└── knowledge_front/
+    ├── src/                  # 首页、登录页、工作台和管理页面
+    ├── public/brand/         # 公司 Logo 与 favicon
+    ├── package.json
+    ├── package-lock.json
+    ├── .env.example          # 前端配置模板
+    └── vite.config.ts        # 开发服务器和 API 代理
+```
+
+## 2. 环境要求
+
+| 组件 | 要求 |
+| --- | --- |
+| Node.js | 推荐 22 LTS，至少 22.12（或 20.19+） |
+| npm | 随 Node.js 安装 |
+| Python | 3.11+，当前开发环境为 3.13 |
+| uv | Python 依赖与虚拟环境管理工具 |
+| PostgreSQL | 16，安装 pgvector 和 pgcrypto 扩展 |
+| Docker / Podman | 可选，用于运行仓库提供的 PostgreSQL 容器 |
+| MinIO | 后续文档上传使用，首页和登录阶段不依赖它 |
+
+所有下方命令默认在项目根目录开始执行；前端和后端需要分别使用一个终端。
+
+## 3. 配置并初始化数据库
+
+### 3.1 后端配置文件
+
+首次启动时复制模板；已有 `.env.local` 的开发环境直接沿用，不要覆盖。
+
+```bash
+cp knowledge_back/.env.example knowledge_back/.env.local
+```
+
+修改 `knowledge_back/.env.local` 中的数据库连接配置：
+
+```dotenv
+APP_ENV=local
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_DB=knowledge_db
+POSTGRES_USER=root
+POSTGRES_PASSWORD=填写你的数据库密码
+```
+
+这里的 `POSTGRES_PASSWORD` 是 **PostgreSQL 连接密码**，与后文 Root 网页登录密码无关。MinIO、DeepSeek 和 DashScope 的配置项先保留在后端文件中，后续接入相应业务时再配置实际值；禁止放入前端 `VITE_*` 环境变量。
+
+本地开发时 JWT 密钥自动生成在被 Git 忽略的 `knowledge_back/.runtime/jwt-secret`。也可以在 `.env.local` 中设置至少 32 字符的 `JWT_SECRET_KEY`。非本地环境必须显式设置此密钥，并通过 HTTPS 访问。
+
+### 3.2 启动 PostgreSQL
+
+如果已经有 PostgreSQL 16 + pgvector 和空数据库 `knowledge_db`，可直接跳到下一步。
+
+如需使用本项目提供的容器：
+
+```bash
+cd knowledge_back
+docker compose --env-file .env.local -f docker-compose.local.yml up -d
+cd ..
+```
+
+容器名为 `kbs-postgres`，数据库名、用户和密码来自 `.env.local`。已有数据库卷的密码不会随着修改环境文件自动改变；请填入现有数据库实际凭据。
+
+### 3.3 通过 SQL 初始化
+
+**数据库结构和初始数据均在根目录 `init.sql` 中。只需导入 SQL，不需要执行 Python 初始化程序。**
+
+脚本用于一个空数据库。已有业务表的当前开发环境已经初始化，正常启动时跳过本步骤；不要对已有数据库反复导入。脚本不会删除旧表，重复导入会因表已存在而停止。
+
+方式一：使用本机 `psql`，在项目根目录执行，按提示输入数据库连接密码：
+
+```bash
+psql -h 127.0.0.1 -p 5432 -U root -d knowledge_db \
+  -v ON_ERROR_STOP=1 -f init.sql
+```
+
+方式二：使用上一步启动的容器，不需要本机安装 `psql`：
+
+```bash
+docker exec -i kbs-postgres psql -U root -d knowledge_db \
+  -v ON_ERROR_STOP=1 < init.sql
+```
+
+如修改过数据库用户名或库名，请相应替换命令中的 `root` 和 `knowledge_db`。
+
+`init.sql` 在一个事务中创建：
+
+- `vector`、`pgcrypto` 扩展。
+- 13 张业务表：用户、角色、页面、角色页面权限、登录会话、知识库、机器人、文档、文档版本、文档切片、索引任务、问答日志、审计日志。
+- Alembic 版本表，供后续增量升级使用。
+- 每张表及每个字段的中文数据库备注。
+- `user`、`super_admin` 两个内置角色。
+- 12 个后台页面；普通用户拥有知识问答和个人信息权限；超级管理员拥有全部页面权限。
+- Root 管理员、默认知识库 `general` 和一条初始化审计记录。
+
+向量列暂使用不限定维度的 `vector`。接入 DashScope 后，需要根据真实响应确认维度，再增加固定维度约束和向量索引。
+
+### 3.4 初始网页登录账号
+
+| 项目 | 初始值 |
+| --- | --- |
+| 用户名 | `root` |
+| 密码 | `Dexforce@Root2026!` |
+| 角色 | `super_admin`（超级管理员） |
+| 页面权限 | 全部 12 个后台页面 |
+
+上述初始密码也明确写在 `init.sql` 中，导入后即可登录。SQL 中的 `password_hash` 是对应的 Argon2 哈希，登录校验使用此字段。
+
+按当前需求，`users.password_plaintext` 另保存原始明文密码，创建用户或重置密码时同步更新。这个敏感字段和密码哈希均不会通过用户列表或个人信息 API 返回。拥有数据库读取权限的人可以看到明文密码，请限制数据库访问；正式部署前修改公开的初始密码。不应仅手动修改明文列，否则不会改变登录密码。
+
+管理员可通过后端维护命令重置密码，交互输入不会显示在命令行参数中：
+
+```bash
+cd knowledge_back
+uv run flask --app app set-password --username root
+```
+
+重置会同时更新密码哈希、明文列，并撤销该用户现有登录会话。
+
+## 4. 启动后端（终端一）
+
+在项目根目录打开终端：
+
+```bash
+cd knowledge_back
+uv sync --locked
+uv run flask --app app run --host 127.0.0.1 --port 5000
+```
+
+后端启动时自动读取 `knowledge_back/.env.local`。首次 `uv sync` 会创建 `.venv` 并安装依赖。
+
+| 地址 | 用途 |
+| --- | --- |
+| `http://127.0.0.1:5000/api/v1` | API 前缀 |
+| `http://127.0.0.1:5000/api/v1/health` | 服务和数据库连接状态 |
+
+健康接口正常返回 `code: 0`，`data.status` 和 `data.database` 均为 `ok`。
+
+以上是本地开发服务器启动方式。正式环境可使用 Gunicorn + 同源反向代理；当前限流默认保存在单进程内存中，多进程部署应配置共享的 `RATELIMIT_STORAGE_URI`。
+
+## 5. 启动前端（终端二）
+
+另开一个终端，从项目根目录执行：
+
+```bash
+cd knowledge_front
+npm ci
+npm run dev
+```
+
+浏览器打开：**http://127.0.0.1:5173/**
+
+先显示品牌首页，点击“登录平台”或“进入知识平台”，再使用 Root 初始账号登录。
+
+前端默认请求同源 `/api/v1`，Vite 会将 `/api` 请求代理到 `http://127.0.0.1:5000`。本地运行无需额外配置 CORS，也不必创建前端 `.env.local`。如果需要显式配置，可复制前端模板：
+
+```bash
+cp .env.example .env.local
+```
+
+模板内容是：
+
+```dotenv
+VITE_API_BASE_URL=/api/v1
+```
+
+如果后端端口改变，需要同时修改 `knowledge_front/vite.config.ts` 的代理目标。建议始终使用 `127.0.0.1:5173` 访问本地前端，避免来回切换 `localhost` 导致浏览器会话不同。
+
+构建生产静态文件：
+
+```bash
+cd knowledge_front
+npm run build
+```
+
+产物位于 `knowledge_front/dist/`。部署时需将 `/api` 代理到 Flask，并为前端路由配置 SPA 回退到 `index.html`。`npm run preview` 仅用于预览静态构建产物，不包含完整生产 API 代理配置。
+
+## 6. 当前页面与功能状态
+
+| 页面 | 路径 | 当前状态 |
+| --- | --- | --- |
+| 品牌首页 | `/` | 已实现，公开访问，适配移动端 |
+| 登录 | `/login` | 已接入真实认证、校验和错误提示 |
+| 工作台 | `/dashboard` | 数据库统计与快捷入口 |
+| 知识问答 | `/qa` | 页面框架、知识库选择、问题输入；模型服务待接入 |
+| 知识库管理 | `/knowledge-bases` | 数据库列表和搜索；编辑功能待开发 |
+| 文档管理 | `/documents` | 数据库列表和搜索；上传、版本操作待开发 |
+| 机器人管理 | `/robots` | 数据库列表和搜索；注册和状态编辑待开发 |
+| 用户管理 | `/users` | 新增、详情、编辑、密码重置、启用／停用、删除、显示名称模糊搜索与状态组合筛选 |
+| 角色管理 | `/roles` | 数据库列表和搜索；编辑待开发 |
+| 页面路由 | `/pages` | 数据库列表和搜索；编辑待开发 |
+| 角色页面权限 | `/role-permissions` | 查看各角色实际授权；权限编辑待开发 |
+| 问答日志 | `/qa-logs` | 数据库列表和搜索 |
+| 审计日志 | `/audit-logs` | 展示登录、退出及账号维护等实际记录 |
+| 个人信息 | `/profile` | 当前用户信息与已授权页面 |
+
+所有页面都采用 Element Plus 组件并统一为黑白橙主题。尚未接入的操作按钮明确禁用，不会生成模拟业务结果。
+
+知识问答统一使用 `/qa`。已有环境在项目根目录执行以下增量 SQL，删除旧的“网页提问测试”页面及所有角色对它的权限绑定；新环境导入最新 `init.sql` 即可：
+
+```bash
+docker exec -i kbs-postgres psql -U root -d knowledge_db \
+  -v ON_ERROR_STOP=1 < knowledge_back/sql/2026-10-21-remove-web-query-page.sql
+```
+
+该脚本可重复执行，只调整页面和权限数据。执行后刷新浏览器页面，重新加载菜单及页面权限。
+
+### 用户管理
+
+超级管理员进入 `/users` 后可以：
+
+- **新增用户**：填写用户名、显示名称、角色、状态及初始密码；密码为 12–1024 个字符，用户名唯一且不含空格。
+- **查看与查询**：点击“详情”查看用户资料；按显示名称进行不区分大小写的包含查询，可同时选择启用／停用状态；支持分页和每页条数切换。
+- **编辑用户**：修改用户名、显示名称、角色或状态；新密码留空表示保留原密码，填写后会同步更新哈希和原始密码列。
+- **启用／停用**：通过列表开关或编辑弹窗操作；停用需要确认，并撤销现有登录会话。
+- **删除用户**：确认后逻辑删除，从列表和统计中移除，清除可用密码并撤销会话；保留历史文档和审计关联，已删除用户名不能再次注册。
+
+Root 账号不能改用户名、改角色、停用或删除；当前登录账号不能修改自身角色、停用或删除。修改自己的用户名或密码后会返回登录页。修改其他用户的用户名、密码、角色或状态后，对方需要重新登录。所有写操作在后端校验管理员权限，并写入审计日志。
+
+本次无需重建数据库。已有 `status VARCHAR(30)` 列可直接支持删除状态。如需同步字段备注与迁移版本，在项目根目录导入增量 SQL：
+
+```bash
+docker exec -i kbs-postgres psql -U root -d knowledge_db \
+  -v ON_ERROR_STOP=1 < knowledge_back/sql/2026-10-21-user-management.sql
+```
+
+新环境直接使用根目录 `init.sql`，无需另行导入该增量脚本。后端没有开启自动重载时，修改代码后需要重启 Flask；前端 `npm run dev` 会自动更新。
+
+认证已实现：Argon2 密码校验、15 分钟 Access Token、HttpOnly 刷新 Cookie、刷新令牌轮换、退出撤销、后端管理接口鉴权以及动态页面路由。Access Token 只保存在前端内存，刷新页面时通过 Cookie 恢复会话。
+
+后续按页面完善知识库 CRUD、文档上传与版本、异步索引、DashScope Embedding、DeepSeek 问答、机器人查询及管理操作。MinIO 和云模型配置不会在当前首页或登录流程中被调用。
+
+## 7. 常见问题
+
+- **首页可以打开，登录提示连接失败**：确认后端已经在 `127.0.0.1:5000` 启动，并检查 Vite 代理目标。
+- **后端提示数据服务暂不可用**：确认数据库已启动、`.env.local` 的连接密码正确，并已导入 `init.sql`。
+- **导入提示表已存在**：目标库已初始化；不要覆盖或清空已有数据。现有环境正常启动即可，后续结构升级使用迁移。
+- **修改 `password_plaintext` 后密码不生效**：该列不参与登录验证；使用 `set-password` 同步更新哈希和明文。
+- **刷新页面后登录失效**：确认前后端使用同源代理。非本地环境会启用 Secure Cookie，必须通过 HTTPS。
+- **登录页没有注册入口**：账号由管理员在“用户管理”页面新增，也可用 `uv run flask --app app create-user --username 用户名 --role user` 交互创建。
+- **部分新增、上传、发送按钮不可用**：本轮先完成页面框架，这些业务操作将在后续逐页接入。
+
+后续数据库结构升级（已初始化的数据库）：
+
+```bash
+cd knowledge_back
+uv run flask --app app db upgrade
+```
+
+## 8. 相关文档
+
+- [完整业务需求](knowledge_back/docs/knowledge-base-management-system-requirements.md)
+- [数据库、MinIO 与模型开发环境](knowledge_back/docs/development-environment.md)
+- [前端开发说明](knowledge_front/docs/development.md)
+- [数据库初始化 SQL](init.sql)
+
+后端 `.env.local`、本地运行数据、第三方服务密钥和 MinIO 许可证均由 `.gitignore` 排除，不要提交到仓库。

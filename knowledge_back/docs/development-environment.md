@@ -1,5 +1,7 @@
 # 开发环境说明
 
+> 2026-10-21 更新：Flask 认证与只读管理 API、Vue 首页/登录及全部页面框架已实现。新环境使用根目录 `init.sql` 初始化数据库，前后端启动步骤以 [根目录 README](../../README.md) 为准。以下保留 PostgreSQL、MinIO 和云模型服务的详细环境约定。
+
 ## 1. 环境划分
 
 项目分为本地开发环境和服务器开发环境，采用前后端分离结构。前端项目目录为 `knowledge_front`，后端项目目录为 `knowledge_back`。两套环境使用相同的服务边界：Vue 前端、Flask API、PostgreSQL + pgvector、MinIO、异步索引 Worker、DeepSeek API 和阿里云百炼 Embedding API。环境差异通过环境变量、网络绑定、数据目录和密钥管理区分。
