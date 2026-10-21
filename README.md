@@ -1,4 +1,4 @@
-# 跨维智能知识平台
+# 智能知识库平台
 
 Vue 3 + Element Plus + Flask 的知识库管理系统。
 
