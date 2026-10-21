@@ -1,0 +1,33 @@
+# Python and frontend build output
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+
+# Local runtime data
+.runtime/
+*.log
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+!.env.server.example
+
+# Private handoff notes may contain credentials
+**/*-private.md
+
+# MinIO AIStor license
+knowledge_back/docs/minio.license
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+
+#License
+*.license
+
+
