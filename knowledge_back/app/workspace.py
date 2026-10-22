@@ -50,11 +50,6 @@ def serialized(row, fields):
 
 
 RESOURCES = {
-    "roles": (
-        Role,
-        ["id", "code", "name", "description", "status", "is_system", "created_at"],
-        "name",
-    ),
     "pages": (
         Page,
         ["id", "code", "name", "route_path", "component_key", "page_type", "sort_order", "status"],

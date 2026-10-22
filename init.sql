@@ -478,7 +478,7 @@ COMMENT ON COLUMN roles.code IS '唯一角色编码；后端管理接口使用 s
 
 COMMENT ON COLUMN roles.name IS '角色的中文显示名称。';
 
-COMMENT ON COLUMN roles.is_system IS '是否为系统内置角色；true 表示内置角色。';
+COMMENT ON COLUMN roles.is_system IS '角色类型：true 系统角色、false 自定义角色；管理员可创建或切换类型。';
 
 COMMENT ON COLUMN roles.status IS '业务启用状态：active 启用、disabled 停用；具体归档状态见所属表说明。';
 

@@ -29,7 +29,7 @@ SCHEMA = {
         {
             "code": "唯一角色编码；后端管理接口使用 super_admin 编码校验管理员身份。",
             "name": "角色的中文显示名称。",
-            "is_system": "是否为系统内置角色；true 表示内置角色。",
+            "is_system": "角色类型：true 系统角色、false 自定义角色；管理员可创建或切换类型。",
         },
     ),
     "pages": (

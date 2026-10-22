@@ -265,7 +265,7 @@ ARCHIVED    版本或文档已归档
 | code | varchar(50) | UNIQUE NOT NULL | `user`、`super_admin` 等 |
 | name | varchar(100) | NOT NULL | 角色名称 |
 | description | text |  | 说明 |
-| is_system | boolean | NOT NULL | 是否系统内置角色 |
+| is_system | boolean | NOT NULL | 是否系统角色；管理员可创建或切换系统／自定义类型 |
 | status | varchar(30) | NOT NULL | 是否启用 |
 | created_at | timestamp | NOT NULL | 创建时间 |
 | updated_at | timestamp | NOT NULL | 修改时间 |
@@ -536,6 +536,7 @@ CREATE INDEX idx_chunks_embedding
 | GET | `/roles` | 超级管理员 | 角色列表 |
 | POST | `/roles` | 超级管理员 | 创建角色 |
 | PUT | `/roles/{id}` | 超级管理员 | 修改角色 |
+| DELETE | `/roles/{id}` | 超级管理员 | 删除角色；`super_admin` 或仍被用户使用的角色不能删除 |
 | GET | `/roles/{id}/pages` | 超级管理员 | 查询角色页面 |
 | PUT | `/roles/{id}/pages` | 超级管理员 | 覆盖角色页面权限 |
 | GET | `/pages` | 超级管理员 | 页面路由列表 |
