@@ -238,6 +238,9 @@ CREATE TABLE index_tasks (
     FOREIGN KEY(document_version_id) REFERENCES document_versions (id)
 );
 
+CREATE INDEX idx_index_tasks_pending ON index_tasks (status, created_at);
+CREATE INDEX idx_document_versions_document_status ON document_versions (document_id, status, version_no);
+
 ALTER TABLE documents ADD CONSTRAINT fk_documents_current_version FOREIGN KEY(current_version_id) REFERENCES document_versions (id);
 
 UPDATE alembic_version SET version_num='904e450aa189' WHERE alembic_version.version_num = 'f58a8310884a';
@@ -272,7 +275,7 @@ COMMENT ON COLUMN document_chunks.document_version_id IS '所属文档版本 ID�
 
 COMMENT ON COLUMN document_chunks.chunk_index IS '版本内切片序号，与 document_version_id 联合唯一。';
 
-COMMENT ON COLUMN document_chunks.content IS '切片纯文本，供检索和回答引用使用。';
+COMMENT ON COLUMN document_chunks.content IS '文本切片或媒体文件标识，供检索和回答引用使用。';
 
 COMMENT ON COLUMN document_chunks.heading_path IS '切片所属 Markdown 标题层级路径。';
 
@@ -280,7 +283,7 @@ COMMENT ON COLUMN document_chunks.token_count IS '切片估算或实际 token �
 
 COMMENT ON COLUMN document_chunks.embedding IS 'pgvector 向量；初始化不指定维度，接入模型后必须校验固定维度再建立向量索引。';
 
-COMMENT ON COLUMN document_chunks.metadata IS '切片附加信息，JSON 对象，可记录行号、代码块和表格位置。';
+COMMENT ON COLUMN document_chunks.metadata IS '切片附加信息，JSON 对象，可记录行号、代码块、表格位置和 image/video 模态。';
 
 COMMENT ON COLUMN document_chunks.id IS '记录主键，UUID 格式，由应用生成；初始化数据由 SQL 生成。';
 
@@ -294,19 +297,19 @@ COMMENT ON COLUMN document_versions.document_id IS '所属逻辑文档 ID，关�
 
 COMMENT ON COLUMN document_versions.version_no IS '文档内递增版本号，与 document_id 联合唯一。';
 
-COMMENT ON COLUMN document_versions.minio_bucket IS '存放原始 Markdown 文件的私有 MinIO 存储桶名称。';
+COMMENT ON COLUMN document_versions.minio_bucket IS '存放原始文件的私有 MinIO 存储桶名称。';
 
-COMMENT ON COLUMN document_versions.minio_object_key IS '唯一 MinIO 对象键；不保存服务器本地文件路径。';
+COMMENT ON COLUMN document_versions.minio_object_key IS '唯一 MinIO 对象键；按知识库、文档和版本组织，不保存服务器本地文件路径。';
 
-COMMENT ON COLUMN document_versions.filename IS '用户上传的原始文件名。';
+COMMENT ON COLUMN document_versions.filename IS '用户上传的原始文件名；支持 Markdown、TXT、PDF、Word、图片和视频。';
 
-COMMENT ON COLUMN document_versions.content_type IS '文件媒体类型，通常为 text/markdown。';
+COMMENT ON COLUMN document_versions.content_type IS '文件媒体类型，用于预览和下载响应。';
 
 COMMENT ON COLUMN document_versions.file_size IS '原始文件大小，单位为字节。';
 
 COMMENT ON COLUMN document_versions.content_hash IS '原始文件内容的 SHA-256 校验摘要。';
 
-COMMENT ON COLUMN document_versions.status IS '处理状态：UPLOADED 已上传、PARSING 解析中、CHUNKING 切片中、EMBEDDING 向量化中、INDEXED 可检索、FAILED 失败。';
+COMMENT ON COLUMN document_versions.status IS '处理状态：PENDING_UPLOAD 待上传、UPLOADED 已上传、PROCESSING 处理中、EMBEDDING 向量化中、INDEXED 文本/图片/视频可检索或其他文件已就绪、FAILED 失败、ARCHIVED 已归档。';
 
 COMMENT ON COLUMN document_versions.chunk_count IS '此版本实际生成的文档切片数量。';
 
@@ -324,13 +327,13 @@ COMMENT ON COLUMN document_versions.updated_at IS '记录最后修改时间，�
 
 COMMENT ON TABLE document_versions IS '文档版本：每次上传创建独立版本和 MinIO 对象，保留历史内容与处理状态。';
 
-COMMENT ON COLUMN documents.knowledge_base_id IS '所属知识库 ID，关联 knowledge_bases.id。';
+COMMENT ON COLUMN documents.knowledge_base_id IS '所属知识库 ID，关联 knowledge_bases.id；文档只能在所属知识库下管理。';
 
 COMMENT ON COLUMN documents.title IS '文档显示标题。';
 
 COMMENT ON COLUMN documents.current_version_id IS '当前可检索版本 ID，关联 document_versions.id；索引成功后才能切换。';
 
-COMMENT ON COLUMN documents.status IS '文档状态：active 有效、archived 已归档。';
+COMMENT ON COLUMN documents.status IS '文档状态：active 有效、archived 已归档；归档后保留历史版本。';
 
 COMMENT ON COLUMN documents.created_by IS '创建此记录的用户 ID，关联 users.id；系统初始化时可为空。';
 
@@ -344,7 +347,7 @@ COMMENT ON TABLE documents IS '逻辑文档：归属于一个知识库，关联�
 
 COMMENT ON COLUMN index_tasks.document_version_id IS '目标文档版本 ID，关联 document_versions.id。';
 
-COMMENT ON COLUMN index_tasks.task_type IS '任务类型：INDEX 首次索引、REINDEX 重新索引、DELETE 删除清理。';
+COMMENT ON COLUMN index_tasks.task_type IS '任务类型：INDEX 首次索引、REINDEX 重新索引、DELETE 删除对象与切片。';
 
 COMMENT ON COLUMN index_tasks.status IS '执行状态：PENDING 待处理、RUNNING 执行中、SUCCESS 成功、FAILED 失败。';
 
@@ -545,7 +548,7 @@ INSERT INTO roles (id, code, name, description, is_system, status, created_at, u
 (gen_random_uuid(), 'user', '普通用户', '访问知识问答与个人信息', true, 'active', now(), now()),
 (gen_random_uuid(), 'super_admin', '超级管理员', '访问全部页面与管理接口', true, 'active', now(), now());
 
--- 初始页面：页面框架已就绪，部分业务操作按开发计划逐步接入。
+-- 初始页面：超级管理员可访问知识库、文档等管理页面，普通用户仅访问问答和个人信息。
 INSERT INTO pages (id, code, name, route_path, route_name, component_key, parent_id, page_type, sort_order, is_visible, status, created_at, updated_at) VALUES
 (gen_random_uuid(), 'dashboard', '工作台', '/dashboard', 'Dashboard', 'Dashboard', NULL, 'menu', 10, true, 'active', now(), now()),
 (gen_random_uuid(), 'knowledge_qa', '知识问答', '/qa', 'KnowledgeQA', 'KnowledgeQA', NULL, 'menu', 20, true, 'active', now(), now()),

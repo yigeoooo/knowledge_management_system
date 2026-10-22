@@ -1,6 +1,6 @@
 # 开发环境说明
 
-> 2026-10-21 更新：Flask 认证与只读管理 API、Vue 首页/登录及全部页面框架已实现。新环境使用根目录 `init.sql` 初始化数据库，前后端启动步骤以 [根目录 README](../../README.md) 为准。以下保留 PostgreSQL、MinIO 和云模型服务的详细环境约定。
+> 2026-10-22 更新：已加入 MinIO 知识库文件对象存储、文档版本、预览下载、在线文本编辑和 PostgreSQL 索引 Worker。新环境使用根目录 `init.sql` 初始化数据库，已有环境执行对应增量 SQL；前后端启动步骤以 [根目录 README](../../README.md) 为准。
 
 ## 1. 环境划分
 
@@ -23,7 +23,7 @@
 
 ### 2.1 本地文档目录
 
-Markdown 文档导入目录固定为：
+知识库文件导入目录固定为：
 
 ```text
 /home/yigeoooo/文档/knowledge_doc
@@ -136,7 +136,7 @@ docker exec kbs-postgres psql -U root -d knowledge_db \
 curl -fsS http://127.0.0.1:9000/minio/health/live
 ```
 
-AIStor Console 地址为 `http://127.0.0.1:9001`。后端使用 `.env.local` 中的 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY` 和 `MINIO_BUCKET` 访问对象存储。
+AIStor Console 地址为 `http://127.0.0.1:9001`。后端使用 `.env.local` 中的 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY` 和 `MINIO_SECRET_KEY` 访问对象存储。`MINIO_BUCKET` 作为历史对象的兼容桶保留；创建知识库时会自动创建以知识库 UUID 派生的独立 Bucket，文档版本的 `minio_bucket` 保存实际使用的桶名。
 
 ### 2.4 DeepSeek 和阿里云百炼配置
 
@@ -157,6 +157,13 @@ Model: qwen3-vl-embedding
 Input: [{"text": "..."}]
 API Key: DASHSCOPE_API_KEY
 ```
+
+图片和视频使用同一个接口，将输入项改为 `[{"image": "https://..."}]` 或
+`[{"video": "https://..."}]`。本项目 Worker 会为 MinIO 对象生成短时预签名 URL，
+因此 `MINIO_PUBLIC_ENDPOINT` 必须是 DashScope 服务可以访问的地址；`127.0.0.1` 只适合浏览器本机访问，不能作为云服务读取媒体的地址。
+文字查询仍使用 `[{"text": "..."}]`，模型返回的向量可以和图片、视频向量直接计算相似度。
+如果使用自建部署或 MaaS 网关，请将该网关实际的多模态 Embedding 路径配置到
+`DASHSCOPE_EMBEDDING_URL`；默认路径只适用于标准 DashScope API。
 
 调用方式：
 

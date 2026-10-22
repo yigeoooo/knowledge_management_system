@@ -67,7 +67,7 @@ POSTGRES_PASSWORD=填写你的数据库密码
 
 ### 3.2 启动 PostgreSQL
 
-如果已经有 PostgreSQL 16 + pgvector 和空数据库 `knowledge_db`，可直接跳到下一步。
+如果已经有 PostgreSQL 16 + pgvector 和空数据库 `knowledge_db`，可直接跳到下一步。文档管理还需要一个私有 MinIO 服务；使用项目 Compose 时会同时启动 `kbs-minio`。`MINIO_BUCKET` 作为历史对象的兼容桶保留，新建知识库时后端会按知识库 UUID 创建独立 Bucket。
 
 如需使用本项目提供的容器：
 
@@ -77,7 +77,7 @@ docker compose --env-file .env.local -f docker-compose.local.yml up -d
 cd ..
 ```
 
-容器名为 `kbs-postgres`，数据库名、用户和密码来自 `.env.local`。已有数据库卷的密码不会随着修改环境文件自动改变；请填入现有数据库实际凭据。
+容器名为 `kbs-postgres` 和 `kbs-minio`，数据库名、用户、MinIO 凭据来自 `.env.local`。本地浏览器访问预签名 URL 时，`MINIO_PUBLIC_ENDPOINT` 应填写浏览器可访问的地址（通常为 `127.0.0.1:9000`）。已有数据库卷的密码不会随着修改环境文件自动改变；请填入现有数据库实际凭据。
 
 ### 3.3 通过 SQL 初始化
 
@@ -201,8 +201,8 @@ npm run build
 | 登录         | `/login`            | 已接入真实认证、校验和错误提示                                               |
 | 工作台       | `/dashboard`        | 数据库统计与快捷入口                                                         |
 | 知识问答     | `/qa`               | 页面框架、知识库选择、问题输入；模型服务待接入                               |
-| 知识库管理   | `/knowledge-bases`  | 数据库列表和搜索；编辑功能待开发                                             |
-| 文档管理     | `/documents`        | 数据库列表和搜索；上传、版本操作待开发                                       |
+| 知识库管理   | `/knowledge-bases`  | 创建、编辑、停用、归档和分页搜索；写操作仅限 `super_admin`                   |
+| 文档管理     | `/documents`        | 按知识库管理 Markdown、TXT、PDF、Word、图片和视频；支持 MinIO 上传、预览、下载、在线文本编辑、版本与索引任务 |
 | 机器人管理   | `/robots`           | 数据库列表和搜索；注册和状态编辑待开发                                       |
 | 用户管理     | `/users`            | 新增、详情、编辑、密码重置、启用／停用、删除、显示名称模糊搜索与状态组合筛选 |
 | 角色管理     | `/roles`            | 角色分页查询、新增、编辑类型、启停与删除；super_admin 受保护                    |
@@ -250,9 +250,20 @@ docker exec -i kbs-postgres psql -U root -d knowledge_db \
 
 新环境直接使用根目录 `init.sql`，无需另行导入该增量脚本。后端没有开启自动重载时，修改代码后需要重启 Flask；前端 `npm run dev` 会自动更新。
 
+### 文档索引 Worker
+
+文档上传完成后，后端会创建 PostgreSQL 中的 `index_tasks` 待处理任务，并自动唤醒当前 Flask 进程内的索引 Worker。开发环境不需要另开终端；如果服务重启后需要恢复遗留任务，仍可手动运行以下命令：
+
+```bash
+cd knowledge_back
+uv run flask --app app index-worker
+```
+
+Worker 从 MinIO 读取文件。Markdown、TXT、PDF 和 DOCX 会提取文本、切片并调用 DashScope Embedding；图片和视频会调用同一多模态 Embedding 模型生成媒体向量，DOC 文件保留原始文件并标记为已就绪。设置 `MINIO_PUBLIC_ENDPOINT` 为 DashScope 可访问的地址，Worker 会向模型提交短时预签名媒体 URL。使用自建或部署模型时，把实际 Embedding 路径填入 `DASHSCOPE_EMBEDDING_URL`，避免把只支持聊天或 OpenAI 兼容路径的地址当成多模态服务地址。单次处理任务可使用 `--once`，生产环境建议将 Worker 作为独立进程托管。
+
 认证已实现：Argon2 密码校验、15 分钟 Access Token、HttpOnly 刷新 Cookie、刷新令牌轮换、退出撤销、后端管理接口鉴权以及动态页面路由。Access Token 只保存在前端内存，刷新页面时通过 Cookie 恢复会话。
 
-后续按页面完善知识库 CRUD、文档上传与版本、异步索引、DashScope Embedding、DeepSeek 问答、机器人查询及管理操作。MinIO 和云模型配置不会在当前首页或登录流程中被调用。
+后续按页面完善 DeepSeek 问答、机器人查询及其他管理操作。知识库管理已接入 CRUD、状态控制、审计和独立 MinIO Bucket；文档管理已接入 MinIO 对象存储、版本、预览、下载、在线 Markdown/TXT 编辑、PDF/DOCX 文本提取和 PostgreSQL 索引任务。生产环境可以继续使用独立的 `uv run flask --app app index-worker` 进程作为任务恢复和扩展吞吐的 Worker。
 
 ## 7. 常见问题
 
@@ -262,7 +273,7 @@ docker exec -i kbs-postgres psql -U root -d knowledge_db \
 - **修改 `password_plaintext` 后密码不生效**：该列不参与登录验证；使用 `set-password` 同步更新哈希和明文。
 - **刷新页面后登录失效**：确认前后端使用同源代理。非本地环境会启用 Secure Cookie，必须通过 HTTPS。
 - **登录页没有注册入口**：账号由管理员在“用户管理”页面新增，也可用 `uv run flask --app app create-user --username 用户名 --role user` 交互创建。
-- **部分新增、上传、发送按钮不可用**：本轮先完成页面框架，这些业务操作将在后续逐页接入。
+- **索引状态长时间停留在等待索引**：确认 MinIO、DashScope 配置正确；如果关闭了 `INDEX_WORKER_AUTOSTART`，请运行 `uv run flask --app app index-worker`。
 
 后续数据库结构升级（已初始化的数据库）：
 
@@ -270,6 +281,8 @@ docker exec -i kbs-postgres psql -U root -d knowledge_db \
 cd knowledge_back
 uv run flask --app app db upgrade
 ```
+
+本轮文档存储只新增索引和数据库备注，已有数据库可执行 `knowledge_back/sql/2026-10-22-document-storage.sql`；不需要重新导入根目录 `init.sql`。
 
 ## 8. 相关文档
 

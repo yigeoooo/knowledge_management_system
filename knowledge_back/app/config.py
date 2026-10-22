@@ -41,7 +41,31 @@ def configuration(overrides):
         "ACCESS_TOKEN_SECONDS": 900,
         "REFRESH_TOKEN_DAYS": 7,
         "SESSION_COOKIE_SECURE": production,
-        "MAX_CONTENT_LENGTH": 16384,
+        "MAX_CONTENT_LENGTH": int(os.getenv("MAX_DOCUMENT_SIZE", str(20 * 1024 * 1024))),
+        "MINIO_ENDPOINT": os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000"),
+        "MINIO_PUBLIC_ENDPOINT": os.getenv(
+            "MINIO_PUBLIC_ENDPOINT", os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
+        ),
+        "MINIO_ACCESS_KEY": os.getenv("MINIO_ACCESS_KEY", ""),
+        "MINIO_SECRET_KEY": os.getenv("MINIO_SECRET_KEY", ""),
+        "MINIO_BUCKET": os.getenv("MINIO_BUCKET", "knowledge-documents"),
+        "MINIO_SECURE": os.getenv("MINIO_SECURE", "false").lower() in {"1", "true", "yes"},
+        "MINIO_URL_SECONDS": int(os.getenv("MINIO_URL_SECONDS", "600")),
+        "MAX_DOCUMENT_SIZE": int(os.getenv("MAX_DOCUMENT_SIZE", str(20 * 1024 * 1024))),
+        "DOCUMENT_UPLOAD_SECONDS": int(os.getenv("DOCUMENT_UPLOAD_SECONDS", "900")),
+        "DASHSCOPE_BASE_URL": os.getenv("DASHSCOPE_BASE_URL", ""),
+        "DASHSCOPE_API_KEY": os.getenv("DASHSCOPE_API_KEY", ""),
+        "DASHSCOPE_EMBEDDING_MODEL": os.getenv("DASHSCOPE_EMBEDDING_MODEL", ""),
+        "DASHSCOPE_EMBEDDING_URL": os.getenv("DASHSCOPE_EMBEDDING_URL", ""),
+        "DASHSCOPE_EMBEDDING_MODE": os.getenv("DASHSCOPE_EMBEDDING_MODE", "text"),
+        "DASHSCOPE_EMBEDDING_DIMENSION": os.getenv("DASHSCOPE_EMBEDDING_DIMENSION", ""),
+        "DASHSCOPE_EMBEDDING_MAX_VIDEO_FRAMES": int(
+            os.getenv("DASHSCOPE_EMBEDDING_MAX_VIDEO_FRAMES", "16")
+        ),
+        "EMBEDDING_PROVIDER": os.getenv("EMBEDDING_PROVIDER", "dashscope"),
+        "INDEX_WORKER_BATCH_SIZE": int(os.getenv("INDEX_WORKER_BATCH_SIZE", "1")),
+        "INDEX_WORKER_AUTOSTART": os.getenv("INDEX_WORKER_AUTOSTART", "true").lower()
+        in {"1", "true", "yes"},
         "RATELIMIT_STORAGE_URI": os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
         **overrides,
     }

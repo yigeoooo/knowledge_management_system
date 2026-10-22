@@ -12,6 +12,7 @@ export const session = reactive({ user: null as User | null, pages: [] as Page[]
 let accessToken = ''
 let refreshing: Promise<void> | null = null
 const base = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
+export const apiBase = base
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message) }
@@ -71,6 +72,29 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     }
     return request<T>(path, options)
   }
+}
+
+export async function uploadFile<T>(path: string, file: Blob, contentType?: string): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${base}${path}`, {
+      method: 'PUT',
+      credentials: 'include',
+      body: file,
+      signal: AbortSignal.timeout(120000),
+      headers: {
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        'Content-Type': contentType || file.type || 'application/octet-stream',
+      },
+    })
+  } catch {
+    throw new ApiError('上传文件失败，请检查网络后重试', 0)
+  }
+  const body = await response.json().catch(() => null)
+  if (!response.ok || !body || body.code !== 0) {
+    throw new ApiError(body?.message || '文件上传失败，请稍后再试', response.status)
+  }
+  return body.data as T
 }
 export async function logout() {
   await api('/auth/logout', { method: 'POST', body: '{}' })

@@ -159,13 +159,13 @@ onMounted(load);
           type="success"
           timestamp="已就绪"
         >
-          业务表初始化与管理页面框架
+          知识库创建、文档上传与索引管理
         </el-timeline-item>
         <el-timeline-item
           hollow
           timestamp="下一阶段"
         >
-          文档上传、索引与知识问答
+          DeepSeek 问答与机器人接口
         </el-timeline-item>
       </el-timeline>
       <div class="development-note">

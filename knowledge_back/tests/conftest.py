@@ -1,3 +1,4 @@
+import importlib
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -9,7 +10,7 @@ from app.extensions import db
 
 
 @pytest.fixture
-def app(tmp_path):
+def app(tmp_path, monkeypatch):
     app = create_app(
         {
             "TESTING": True,
@@ -19,6 +20,11 @@ def app(tmp_path):
             "SESSION_COOKIE_SECURE": False,
         }
     )
+    # The knowledge-base API now provisions a MinIO bucket.  Keep this
+    # database-only fixture deterministic; the integration environment covers
+    # the real object-storage call.
+    workspace_module = importlib.import_module("app.workspace")
+    monkeypatch.setattr(workspace_module, "ensure_bucket", lambda bucket: bucket)
     runner = app.test_cli_runner()
     result = runner.invoke(args=["db", "upgrade"])
     assert result.exit_code == 0, result.output

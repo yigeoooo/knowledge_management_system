@@ -19,12 +19,16 @@ def create_app(overrides=None):
 
     from .auth import auth
     from .cli import register_cli
+    from .documents import documents
+    from .retrieval import retrieval
     from .roles import roles
     from .users import users
     from .workspace import workspace
 
     app.register_blueprint(auth)
+    app.register_blueprint(documents)
     app.register_blueprint(roles)
+    app.register_blueprint(retrieval)
     app.register_blueprint(workspace)
     app.register_blueprint(users)
     register_cli(app)

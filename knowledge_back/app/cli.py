@@ -6,6 +6,17 @@ from .models import AuditLog, Role, User
 
 
 def register_cli(app):
+    @app.cli.command("index-worker")
+    @click.option("--once", is_flag=True, help="处理当前待处理任务后退出。")
+    @click.option("--interval", type=click.FloatRange(min=0.1), default=2.0, show_default=True)
+    def index_worker(once, interval):
+        """Run the PostgreSQL-backed document indexing worker."""
+        from .indexer import run_worker
+
+        processed = run_worker(app, once=once, interval=interval)
+        if once:
+            click.echo(f"已处理 {processed} 个索引任务。")
+
     @app.cli.command("set-password")
     @click.option("--username", required=True)
     @click.password_option(confirmation_prompt=True)

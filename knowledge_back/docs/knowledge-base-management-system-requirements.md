@@ -6,7 +6,7 @@
 
 本文档中的业务流程指知识库管理系统流程，系统主要解决以下问题：
 
-1. 管理员上传 Markdown 文档并构建可检索的知识库。
+1. 管理员上传 Markdown、TXT、PDF、Word、图片或视频文件并构建可检索的知识库。
 2. 普通用户通过网页向知识库提问。
 3. 已注册机器人通过 HTTP 请求向指定知识库提问。
 4. 管理员可以管理机器人、知识库文件、用户、角色和页面权限。
@@ -19,12 +19,12 @@
 | 后端 API | `knowledge_back`：Flask，负责认证、权限、文档管理、问答编排和任务状态 |
 | 关系数据库 | PostgreSQL，保存用户、角色、页面、知识库元数据、文档切片、问答日志 |
 | 向量检索 | PostgreSQL + pgvector |
-| 对象存储 | MinIO，保存原始 Markdown 文件 |
+| 对象存储 | MinIO，保存原始知识库文件 |
 | 异步处理 | Worker + 任务队列，负责解析、切片和 Embedding |
 | Embedding | 阿里云百炼 Embedding 云服务，文档和问题必须使用同一模型版本 |
 | 大语言模型 | DeepSeek OpenAI 兼容 API |
 
-原始文件存储在 MinIO，数据库保存 MinIO 的 `bucket`、`object_key` 和业务元数据。数据库不保存服务器本地文件路径，也不把 MinIO 作为用户权限和业务状态的来源。
+原始文件存储在 MinIO，数据库保存 MinIO 的 `bucket`、`object_key` 和业务元数据。每个知识库使用由自身 UUID 派生的独立 Bucket，知识库编码或名称修改不会改变存储位置。数据库不保存服务器本地文件路径，也不把 MinIO 作为用户权限和业务状态的来源。文档通过 `documents.knowledge_base_id` 归属知识库，所有文档操作都必须校验该关系。
 
 第一版采用一个系统可以包含多个知识库的设计。机器人不和知识库建立关联，机器人请求中通过知识库 `code` 指定目标知识库。因此任何已注册且启用的机器人，只要提供有效的知识库 `code`，就可以查询该知识库。以后如果需要限制机器人访问范围，再增加机器人和知识库的关联表。
 
@@ -94,7 +94,7 @@
 1. 超级管理员进入知识库管理页面。
 2. 填写知识库名称、唯一 `code` 和描述。
 3. 后端检查 `code` 是否重复。
-4. 创建知识库记录，状态为 `active`。
+4. 创建知识库记录并在 MinIO 创建该知识库专属的私有 Bucket，状态为 `active`。
 5. 管理员可以将知识库设为停用、恢复或归档。
 
 知识库 `code` 是机器人请求中使用的外部标识；数据库内部仍使用 UUID 作为主键。
@@ -122,15 +122,15 @@ knowledge_base 状态为 active
 ### 4.4 文档上传和索引流程
 
 1. 超级管理员在指定知识库下点击上传。
-2. 后端校验用户登录状态、角色、文件扩展名和大小。
+2. 后端校验用户登录状态、角色、文件扩展名和大小；允许 Markdown、TXT、PDF、Word、图片和视频。
 3. 后端生成 MinIO 预签名上传 URL，或由后端接收文件后上传到 MinIO。
-4. 前端上传 Markdown 文件。
+4. 前端上传所选文件到 MinIO。
 5. 前端调用上传完成接口。
-6. 后端创建文档和文档版本记录，状态为 `UPLOADED`。
+6. 后端在准备上传时创建归属于该知识库的文档和 `PENDING_UPLOAD` 版本；完成接口校验 MinIO 对象后将版本改为 `UPLOADED`。
 7. 后端创建异步索引任务。
-8. Worker 从 MinIO 读取原文件，解析 Markdown 结构。
-9. Worker 按标题、段落、代码块和表格进行切片。
-10. Worker 批量生成 Embedding。
+8. Worker 从 MinIO 读取原文件；Markdown/TXT、PDF、DOCX 提取文本，图片和视频以短时 MinIO 预签名地址提交给多模态 Embedding，暂不具备可靠文本提取的 DOC 保留为文件资源。
+9. 文本 Worker 按标题、段落、代码块和表格进行切片；每个图片或视频作为一个媒体切片。
+10. Worker 批量生成 Embedding，文本、图片和视频使用同一个多模态模型及向量维度。
 11. Worker 将切片和向量写入 PostgreSQL。
 12. 所有切片成功后，版本状态变为 `INDEXED`，文档当前版本指向该版本。
 13. 任一步骤失败时，版本状态变为 `FAILED`，保存错误信息并支持重试。
@@ -148,8 +148,8 @@ knowledge_base 状态为 active
 
 #### 修改
 
-1. 管理员下载当前 Markdown 内容。
-2. 前端允许编辑文本。
+1. 管理员读取当前 Markdown/TXT 内容，或选择其他文件类型上传新版本。
+2. 前端允许编辑 Markdown/TXT 文本；PDF、Word、图片和视频通过上传新版本修改。
 3. 修改后的内容上传为新的 MinIO 对象。
 4. 后端创建新的文档版本，不直接覆盖当前版本。
 5. 旧版本保持可追溯，新版本进入 `PROCESSING`。
@@ -170,8 +170,8 @@ knowledge_base 状态为 active
 2. 用户选择知识库并输入问题。
 3. 前端调用网页提问接口，携带 Bearer Token。
 4. 后端验证 Token、用户状态和知识库状态。
-5. 后端调用阿里云百炼 Embedding 云服务处理问题。
-6. 在指定知识库中检索状态为 `INDEXED` 的文档切片。
+5. 后端调用与文档相同的阿里云百炼多模态 Embedding 模型处理问题文字。
+6. 在指定知识库中检索状态为 `INDEXED` 且仍是当前版本的文档切片；文本、图片和视频向量可以直接进行跨模态相似度比较。
 7. 可选使用关键词检索或重排模型提高召回质量。
 8. 将问题、检索片段和来源信息提交给大语言模型。
 9. 要求模型只根据检索内容回答，无法找到依据时明确说明。
@@ -233,11 +233,13 @@ archived    只读保存
 ### 5.4 文档和文档版本状态
 
 ```text
-UPLOADED    原文件已保存，等待处理
-PROCESSING  正在解析、切片或生成向量
-INDEXED     已完成索引，可以检索
-FAILED      处理失败，可以重试
-ARCHIVED    版本或文档已归档
+PENDING_UPLOAD 等待浏览器完成上传
+UPLOADED      原文件已保存，等待处理
+PROCESSING    正在解析或切片
+EMBEDDING     正在生成向量
+INDEXED       文本、图片或视频已完成向量索引；DOC 等资源文件已就绪
+FAILED        处理失败，可以重试
+ARCHIVED      版本或文档已归档
 ```
 
 ## 6. 数据库设计
@@ -584,14 +586,19 @@ CREATE INDEX idx_chunks_embedding
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | GET | `/knowledge-bases/{id}/documents` | 超级管理员 | 文档分页列表 |
-| POST | `/documents/presign-upload` | 超级管理员 | 获取 MinIO 上传地址 |
+| POST | `/documents/presign-upload` | 超级管理员 | 获取任意支持文件类型的 MinIO 上传地址 |
 | POST | `/documents/complete` | 超级管理员 | 上传完成并创建索引任务 |
 | GET | `/documents/{id}` | 超级管理员 | 文档和版本详情 |
+| GET | `/documents/{id}/content` | 超级管理员 | 读取 Markdown/TXT 当前或指定版本内容 |
 | GET | `/documents/{id}/download-url` | 超级管理员 | 获取临时下载地址 |
-| PUT | `/documents/{id}` | 超级管理员 | 上传新版本或修改文档信息 |
+| GET | `/documents/{id}/preview-url` | 超级管理员 | 获取图片、视频、PDF 等文件的临时预览地址 |
+| GET | `/documents/{id}/text-preview` | 超级管理员 | 提取 PDF/DOCX 文本用于预览 |
+| PUT | `/documents/versions/{version_id}/upload` | 超级管理员 | 预签名上传失败时的同源上传回退 |
+| PUT | `/documents/{id}` | 超级管理员 | 修改文档标题 |
 | POST | `/documents/{id}/reindex` | 超级管理员 | 重新建立索引 |
 | DELETE | `/documents/{id}` | 超级管理员 | 归档文档并清理对象 |
 | GET | `/tasks/{id}` | 超级管理员 | 查询索引任务状态 |
+| POST | `/web/search` | 登录用户 | 用文字查询同一知识库中的文本、图片和视频向量来源 |
 
 获取上传地址请求：
 
@@ -604,7 +611,7 @@ CREATE INDEX idx_chunks_embedding
 }
 ```
 
-返回 `upload_url`、`object_key` 和过期时间。前端完成 MinIO 上传后必须调用 `/documents/complete`，后端才创建正式文档版本和索引任务。
+返回 `upload_url`、`object_key` 和过期时间。新建文档时后端会先保存 `PENDING_UPLOAD` 元数据；前端完成 MinIO 上传后必须调用 `/documents/complete`，后端才将版本置为 `UPLOADED` 并创建索引任务。编辑已有文档时，在请求中携带 `document_id` 和 `base_version_id`，后端会按同一知识库创建新版本并检查并发编辑冲突。
 
 ### 7.6 网页提问
 
@@ -690,7 +697,7 @@ CREATE INDEX idx_chunks_embedding
 
 ## 9. 检索和问答规则
 
-1. 文档和问题使用同一个阿里云百炼 Embedding 模型和向量维度。
+1. 文档和问题使用同一个阿里云百炼多模态 Embedding 模型和向量维度；文字查询可以召回文字、图片和视频。
 2. Embedding 服务通过环境变量配置，不能使用 DeepSeek 对话接口的文本结果伪装成向量。
 3. 只检索当前知识库中 `INDEXED` 的当前文档版本。
 4. 默认召回 Top 10～20 个切片，再选取 Top 3～8 个提交给大模型。
@@ -709,7 +716,7 @@ CREATE INDEX idx_chunks_embedding
 - MinIO Bucket 默认私有，前端只使用短时预签名 URL。
 - 不向浏览器返回 MinIO Access Key 和 Secret Key。
 - 登录接口限流，机器人接口按序列号和 IP 限流。
-- 上传限制为 Markdown 文件，并限制大小、文件名和请求体大小。
+- 上传限制为 Markdown、TXT、PDF、Word、图片和视频，并限制大小、文件名和请求体大小。
 - 所有管理操作写入审计日志。
 - 管理员注册机器人和用户的接口必须登录并校验超级管理员权限。
 - 机器人接口使用 HTTPS，后续可增加 API Key 或请求签名。
@@ -773,7 +780,7 @@ CREATE INDEX idx_chunks_embedding
 5. 机器人不登录也能通过已注册的 `serial_no` 发起请求。
 6. 未注册或已停用的机器人请求被拒绝。
 7. 机器人可以通过 `knowledge_base_code` 查询指定知识库。
-8. 原始 Markdown 文件保存于 MinIO，数据库保存对象信息和业务元数据。
+8. 原始知识库文件保存于 MinIO，数据库保存对象信息和业务元数据。
 9. 文档经过解析、切片和 Embedding 后才能参与检索。
 10. 网页和机器人问答都返回答案、来源和请求编号。
 11. 文档索引失败时可以查看错误原因并重新处理。
