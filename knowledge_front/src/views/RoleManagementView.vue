@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 import { Delete, Edit, Plus, Refresh, Search, Setting } from "@element-plus/icons-vue";
 import { api } from "../lib/session";
+import { queryParams } from "../lib/query";
 
 interface ManagedRole {
   id: string;
@@ -80,7 +81,7 @@ async function loadRoles() {
   loading.value = true;
   listError.value = "";
   try {
-    const params = new URLSearchParams({
+    const params = queryParams({
       ...appliedFilters,
       page: String(page.value),
       page_size: String(pageSize.value),
@@ -328,6 +329,7 @@ onBeforeUnmount(() => {
           v-model="filters.status"
           placeholder="全部状态"
           clearable
+          value-on-clear=""
           @change="search"
         >
           <el-option

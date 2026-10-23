@@ -14,6 +14,7 @@ import {
   RefreshRight,
 } from "@element-plus/icons-vue";
 import { api, uploadFile } from "../lib/session";
+import { queryParams } from "../lib/query";
 import { renderMarkdown } from "../lib/markdown";
 
 const route = useRoute();
@@ -224,7 +225,7 @@ async function loadDocuments() {
   loading.value = true;
   error.value = "";
   try {
-    const params = new URLSearchParams({
+    const params = queryParams({
       page: String(page.value),
       page_size: "20",
       q: applied.q,
@@ -618,6 +619,7 @@ onBeforeUnmount(stopIndexPolling);
         v-model="filters.status"
         placeholder="全部状态"
         clearable
+        value-on-clear=""
         @change="search"
       >
         <el-option

@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Collection, Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '../lib/session'
+import { queryParams } from '../lib/query'
 
 type KnowledgeBaseStatus = 'active' | 'disabled' | 'archived'
 interface KnowledgeBase {
@@ -64,7 +65,7 @@ async function loadBases() {
   loading.value = true
   listError.value = ''
   try {
-    const params = new URLSearchParams({ ...appliedFilters, page: String(page.value), page_size: String(pageSize.value) })
+    const params = queryParams({ ...appliedFilters, page: String(page.value), page_size: String(pageSize.value) })
     const result = await api<KnowledgeBasePage>(`/knowledge-bases?${params}`)
     if (current !== listRequest) return
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
@@ -149,7 +150,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest })
   <el-card shadow="never" class="resource-card knowledge-bases-card">
     <el-form class="knowledge-bases-filters" :inline="true" @submit.prevent="search">
       <el-form-item label="名称或编码"><el-input v-model="filters.q" placeholder="输入名称或编码" :prefix-icon="Search" maxlength="200" clearable @clear="search" /></el-form-item>
-      <el-form-item label="状态"><el-select v-model="filters.status" placeholder="全部状态" clearable @change="search"><el-option label="启用" value="active" /><el-option label="停用" value="disabled" /><el-option label="已归档" value="archived" /></el-select></el-form-item>
+      <el-form-item label="状态"><el-select v-model="filters.status" placeholder="全部状态" clearable value-on-clear="" @change="search"><el-option label="启用" value="active" /><el-option label="停用" value="disabled" /><el-option label="已归档" value="archived" /></el-select></el-form-item>
       <el-form-item><el-button type="primary" :icon="Search" native-type="submit">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
     </el-form>
     <div class="list-heading"><span>知识库列表 <el-tag type="info" effect="plain" size="small">{{ total }}</el-tag></span><el-button :icon="Refresh" :loading="loading" text @click="loadBases">刷新</el-button></div>

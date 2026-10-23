@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 import { Plus, Refresh, Search, User as UserIcon } from "@element-plus/icons-vue";
 import { api, clearSession, session } from "../lib/session";
+import { queryParams } from "../lib/query";
 import { installPages } from "../router";
 
 interface ManagedUser {
@@ -114,7 +115,7 @@ async function loadUsers() {
   loading.value = true;
   listError.value = "";
   try {
-    const params = new URLSearchParams({
+    const params = queryParams({
       ...appliedFilters,
       page: String(page.value),
       page_size: String(pageSize.value),
@@ -389,6 +390,7 @@ onBeforeUnmount(() => {
           v-model="filters.status"
           placeholder="全部状态"
           clearable
+          value-on-clear=""
           @change="search"
         >
           <el-option

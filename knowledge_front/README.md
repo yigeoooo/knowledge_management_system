@@ -11,4 +11,6 @@ npm run dev
 
 生产构建：`npm run build`，产物位于 `dist/`。
 
+状态筛选浏览器回归：`npm run test:e2e`。测试使用本机 Google Chrome，自动在 `127.0.0.1:4174` 启动测试前端，通过模拟 API 检查六个管理页面的状态选择、清空、刷新和组合查询，无需启动后端或连接业务数据库。
+
 本项目只配置后端 API 地址，不保存 PostgreSQL、MinIO、DeepSeek 或阿里云百炼密钥。

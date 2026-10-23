@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from .auth import password_hasher
 from .extensions import db
-from .http import ApiError, success
+from .http import ApiError, status_filter, success
 from .models import AuditLog, Role, User, UserSession, now
 from .workspace import admin_only
 
@@ -156,7 +156,7 @@ def list_users():
     if page < 1 or not 1 <= page_size <= 100:
         raise ApiError("页码需大于 0，每页条数需在 1–100 之间", 422)
     keyword = request.args.get("q", "").strip()
-    status = request.args.get("status", "")
+    status = status_filter()
     if len(keyword) > 100 or "\x00" in keyword:
         raise ApiError("显示名称关键词不能超过 100 个字符或包含空字符", 422)
     if status not in ("", "active", "disabled"):

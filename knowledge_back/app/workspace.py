@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .auth import authenticated
 from .extensions import db
-from .http import ApiError, success
+from .http import ApiError, status_filter, success
 from .models import (
     AuditLog,
     Document,
@@ -189,7 +189,7 @@ def resource_list(resource):
     keyword = request.args.get("q", "").strip()[:200]
     if keyword:
         query = query.where(getattr(model, search_field).icontains(keyword, autoescape=True))
-    status = request.args.get("status", "")
+    status = status_filter()
     if status and hasattr(model, "status"):
         query = query.where(model.status == status)
     order = model.sort_order if model is Page else model.created_at.desc()
@@ -239,7 +239,7 @@ def knowledge_bases():
     if page < 1 or not 1 <= page_size <= 100:
         raise ApiError("页码需大于 0，每页条数需在 1–100 之间", 422)
     keyword = request.args.get("q", "").strip()
-    status = request.args.get("status", "")
+    status = status_filter()
     if len(keyword) > 200 or "\x00" in keyword:
         raise ApiError("知识库关键词不能超过 200 个字符或包含空字符", 422)
     if status not in {"", *KNOWLEDGE_BASE_STATUSES}:
