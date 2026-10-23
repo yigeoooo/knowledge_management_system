@@ -173,8 +173,8 @@ knowledge_base 状态为 active
 5. 后端调用与文档相同的阿里云百炼多模态 Embedding 模型处理问题文字。
 6. 在指定知识库中检索状态为 `INDEXED` 且仍是当前版本的文档切片；文本、图片和视频向量可以直接进行跨模态相似度比较。
 7. 可选使用关键词检索或重排模型提高召回质量。
-8. 本期召回最多 15 个切片，经相似度阈值、去重和长度预算筛选最多 6 个文本片段，将问题、文本和来源信息提交给 DeepSeek。图片、视频只展示为相关资料，不用于推断媒体内容。
-9. 要求模型只根据检索内容回答，无法找到依据时明确说明。
+8. 具体问题融合最多 24 个向量候选和 24 个关键词候选，补齐相邻片段；流程和主题概述补齐代表章节；通用概览按文档目录覆盖多篇资料。最多使用 10 个切片、24000 字符，保留推荐问题的原始来源，并声明概览覆盖范围。图片、视频只展示为相关资料，不用于推断媒体内容。
+9. 后端为原文段落编号，模型生成回答块与段落引用，另一次审阅检查事实依据。允许同义改写和跨段概括；格式或引用不合格自动纠正一次，不能核实的内容不展示，可返回有依据的部分或相关原文。
 10. 返回答案、来源文档、标题和请求编号。
 11. 将问答记录写入 `qa_logs`，推荐问题不写问答日志。本期为单轮非流式问答，重试使用相同 `request_id` 复用结果或重新处理失败记录。
 
@@ -444,7 +444,7 @@ CREATE INDEX idx_chunks_embedding
 | sources | jsonb |  | 来源文档和标题 |
 | retrieval_count | integer |  | 召回数量 |
 | model_name | varchar(200) |  | 大模型名称 |
-| status | varchar(30) | NOT NULL | `PROCESSING`/`SUCCESS`/`NO_EVIDENCE`/`FAILED` |
+| status | varchar(30) | NOT NULL | `PROCESSING`/`SUCCESS`/`PARTIAL`/`NO_EVIDENCE`/`SOURCES_ONLY`/`FAILED` |
 | error_message | text |  | 错误信息 |
 | latency_ms | integer |  | 总耗时 |
 | created_at | timestamp | NOT NULL | 创建时间 |
@@ -631,11 +631,11 @@ CREATE INDEX idx_chunks_embedding
 }
 ```
 
-`question` 为 1–2000 字，`request_id` 为 1–100 位字母、数字或 `._-`；本期不接受 `top_k`、`stream` 或历史消息参数。成功响应的 `data` 含 `request_id`、`knowledge_base_id`、`question`、`answer`、`answer_status`（`answered` / `insufficient_evidence`）、`sources`、`model`、`latency_ms`。文本来源带 `source_id`（答案引用编号）、`chunk_id`、文档和版本信息、标题路径、片段正文与相似度；相关媒体来源不带引用编号，预览链接在返回时生成，不存入日志。
+`question` 为 1–2000 字，`request_id` 为 1–100 位字母、数字或 `._-`，推荐提问可额外携带 `suggestion_token`；本期不接受 `top_k`、`stream` 或历史消息参数。成功响应的 `data` 含 `request_id`、`knowledge_base_id`、`question`、`answer`、`answer_status`（`answered` / `partial` / `insufficient_evidence` / `sources_only`）、`sources`、`model`、`latency_ms`。引用文本带 `source_id`（程序添加的编号）、`chunk_id`、文档和版本信息、标题路径、片段正文；`score` 只在有真实向量相似度时为数字，否则为 null。仅供参考的文本和媒体不带引用编号，预览链接在返回时生成，不存入日志。
 
-推荐接口仅接受 `{"knowledge_base_id":"kb-uuid"}`，返回 `knowledge_base_id`、`status`（`ready` / `empty`）和 `questions` 数组；每项含 `question` 及 `source`（切片、文档、版本、标题路径）。仅使用当前模型索引的当前文本版本，每次请求重新随机抽样，不缓存，依据不足时返回少于三条或空数组。推荐失败不影响用户手动提问。
+推荐接口仅接受 `{"knowledge_base_id":"kb-uuid"}`，返回 `knowledge_base_id`、`status`（`ready` / `empty`）和 `questions` 数组；每项含 `question`、`source`（切片、文档、版本、标题路径）和 `suggestion_token`。凭据签名绑定用户、知识库、问题、原始切片，有效期 8 小时；使用时仍校验切片是否属于当前有效版本，篡改或失效返回 `40903`。前端只在问题未被编辑时携带凭据。推荐通过可回答性审阅后才展示；仅使用当前模型索引的当前文本版本，每次请求重新随机抽样，不缓存，依据不足时返回少于三条或空数组。
 
-同一请求编号绑定用户、知识库和问题。冲突码 `40901` 表示编号已用于其他请求，`40902` 表示正在处理或被重试接管，`40903` 表示引用文档已更新；前端在 `40901` / `40903` 后使用新编号重试，网络失败及 `40902` 保留原编号。已完成结果重新返回前也会校验引用是否仍属于当前可用版本。模型失败返回 `503`，不返回服务商原始错误内容或密钥。推荐限每用户每分钟 12 次，问答限 20 次。
+同一请求编号绑定用户、知识库和问题。冲突码 `40901` 表示编号已用于其他请求，`40902` 表示正在处理或被重试接管，`40903` 表示引用文档已更新或推荐凭据失效；前端在 `40901` / `40903` 后使用新编号重试，`40903` 同时清除推荐凭据，网络失败及 `40902` 保留原编号。已完成结果重新返回前也会校验引用是否仍属于当前可用版本；收到结果后的主动再次发送使用新编号。格式错误兼容无歧义变体并自动纠正一次，仍无法确认时返回正常的 `sources_only` 或 `insufficient_evidence`；部分事实有依据返回 `partial`，真实服务或连接失败返回 `503`。不返回服务商原始错误内容或密钥。推荐限每用户每分钟 12 次，问答限 20 次。
 
 ### 7.7 机器人提问
 

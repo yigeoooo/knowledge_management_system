@@ -103,9 +103,9 @@ Authorization: Bearer <access_token>
 - 没有检索依据时的明确提示
 - 超时、登录失效和模型服务失败提示
 
-进入页面和切换知识库时，调用 `POST /api/v1/web/suggested-questions`，请求只含 `knowledge_base_id`。展示返回的最多三个 `questions`，点击后填入输入框；加载期间显示骨架，失败提供重试，空知识库不使用写死问题补位。
+进入页面和切换知识库时，调用 `POST /api/v1/web/suggested-questions`，请求只含 `knowledge_base_id`。展示返回的最多三个 `questions`，点击后填入输入框并保留该项的 `suggestion_token`，提交时携带该凭据以保留原始来源；编辑问题后清除凭据。加载期间显示骨架，失败提供重试，空知识库不使用写死问题补位。
 
-问答为单轮非流式；答案通过共享的 Markdown 渲染器及 DOMPurify 展示，保留编号引用与来源。网络错误重试复用 `request_id`，同一请求不会重复写日志。推荐超时为 110 秒，问答超时为 240 秒；切换知识库或离开页面取消当前请求并丢弃迟到响应。没有依据时展示 `insufficient_evidence` 状态。
+问答为单轮非流式；答案及右侧来源通过共享的 Markdown 渲染器及 DOMPurify 展示，保留编号引用。网络错误重试复用 `request_id`，同一请求不会重复写日志；收到结果后主动再次发送使用新编号。推荐超时为 120 秒，问答超时为 300 秒（含服务端生成、审阅及最多一次纠正）；切换知识库或离开页面取消当前请求并丢弃迟到响应。根据 `answer_status` 显示正常回答、`partial` 部分有依据、`insufficient_evidence` 资料不足或 `sources_only` 相关资料；不把这些状态当作红色服务错误。
 
 ## 6. 管理页面
 

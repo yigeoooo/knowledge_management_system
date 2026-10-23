@@ -75,3 +75,30 @@ def test_provider_error_does_not_expose_body_or_key(chat_context, monkeypatch):
     assert "401" in str(raised.value)
     assert "test-secret" not in str(raised.value)
     assert "private payload" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '```json\n{"answerable": true, "blocks": []}\n```',
+        '\ufeff {"answerable": true, "blocks": []}',
+        [{"type": "text", "text": '{"answerable": true, "blocks": []}'}],
+    ],
+)
+def test_valid_json_wrappers_are_accepted(chat_context, monkeypatch, content):
+    body = {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+    monkeypatch.setattr(
+        chat_module, "urlopen", Mock(return_value=BytesIO(json.dumps(body).encode()))
+    )
+    payload, _ = chat_module.complete_json("JSON", {})
+    assert payload["answerable"] is True
+
+
+def test_broken_command_json_is_not_silently_rewritten(chat_context, monkeypatch):
+    content = '{"blocks": [{"text": "run "--delete" now"}]}'
+    body = {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+    monkeypatch.setattr(
+        chat_module, "urlopen", Mock(return_value=BytesIO(json.dumps(body).encode()))
+    )
+    with pytest.raises(chat_module.ChatFormatError):
+        chat_module.complete_json("JSON", {})

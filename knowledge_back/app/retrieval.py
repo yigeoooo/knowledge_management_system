@@ -68,7 +68,7 @@ def _cosine(left, right):
     return numerator / (left_norm * right_norm)
 
 
-def _source(chunk, version, document, score):
+def source_from_row(chunk, version, document, score=None):
     metadata = chunk.chunk_metadata if isinstance(chunk.chunk_metadata, dict) else {}
     modality = metadata.get("modality", "text")
     source = {
@@ -79,7 +79,7 @@ def _source(chunk, version, document, score):
         "version_no": version.version_no,
         "filename": version.filename,
         "modality": modality,
-        "score": round(max(-1.0, min(1.0, score)), 6),
+        "score": round(max(-1.0, min(1.0, score)), 6) if score is not None else None,
         "heading_path": chunk.heading_path,
         "content": None if modality != "text" else chunk.content,
     }
@@ -121,7 +121,7 @@ def search_sources(knowledge_base_id, question, *, top_k=15):
         distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
         rows = db.session.execute(query.add_columns(distance).order_by(distance).limit(top_k)).all()
         sources = [
-            _source(chunk, version, document, 1.0 - distance)
+            source_from_row(chunk, version, document, 1.0 - distance)
             for chunk, version, document, distance in rows
             if distance is not None and math.isfinite(distance)
         ]
@@ -133,7 +133,7 @@ def search_sources(knowledge_base_id, question, *, top_k=15):
                 scored.append((score, chunk, version, document))
         scored.sort(key=lambda item: item[0], reverse=True)
         sources = [
-            _source(chunk, version, document, score)
+            source_from_row(chunk, version, document, score)
             for score, chunk, version, document in scored[:top_k]
         ]
     return sources, model

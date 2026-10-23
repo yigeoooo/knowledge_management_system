@@ -13,13 +13,14 @@ interface Source {
   version_no: number;
   filename: string;
   modality: "text" | "image" | "video";
-  score: number;
+  score: number | null;
   heading_path: string | null;
   content: string | null;
   preview_url?: string | null;
 }
 interface SuggestedQuestion {
   question: string;
+  suggestion_token: string;
   source: { chunk_id: string; document_title: string; version_id: string };
 }
 interface Answer {
@@ -27,7 +28,7 @@ interface Answer {
   knowledge_base_id: string;
   question: string;
   answer: string;
-  answer_status: "answered" | "insufficient_evidence";
+  answer_status: "answered" | "partial" | "sources_only" | "insufficient_evidence";
   sources: Source[];
 }
 const bases = ref<{ id: string; name: string; status: string }[]>([]);
@@ -35,6 +36,7 @@ const basesLoading = ref(true);
 const basesError = ref("");
 const selected = ref("");
 const question = ref("");
+const selectedSuggestion = ref<SuggestedQuestion | null>(null);
 const suggestions = ref<SuggestedQuestion[]>([]);
 const suggestionsLoading = ref(false);
 const suggestionsError = ref("");
@@ -89,7 +91,7 @@ async function loadSuggestions() {
     const result = await api<{ questions: SuggestedQuestion[] }>("/web/suggested-questions", {
       method: "POST",
       body: JSON.stringify({ knowledge_base_id: baseId }),
-      timeoutMs: 110000,
+      timeoutMs: 120000,
       signal: suggestionsController.signal,
     });
     if (sequence !== suggestionSequence || selected.value !== baseId || disposed) return;
@@ -106,11 +108,21 @@ function requestId() {
     n.toString(16).padStart(2, "0")
   ).join("");
 }
+function useSuggestion(item: SuggestedQuestion) {
+  question.value = item.question;
+  selectedSuggestion.value = item;
+  queryError.value = "";
+}
+watch(question, (value) => {
+  if (value.trim() !== selectedSuggestion.value?.question) selectedSuggestion.value = null;
+}, { flush: "sync" });
 async function ask() {
   if (!selected.value || !question.value.trim() || searching.value) return;
   const baseId = selected.value;
   const text = question.value.trim();
-  const signature = JSON.stringify([baseId, text]);
+  const suggestionToken = selectedSuggestion.value?.question === text
+    ? selectedSuggestion.value.suggestion_token : undefined;
+  const signature = JSON.stringify([baseId, text, suggestionToken]);
   if (attempt?.signature !== signature) attempt = { signature, requestId: requestId() };
   const sequence = ++querySequence;
   queryController?.abort();
@@ -122,17 +134,21 @@ async function ask() {
   try {
     const result = await api<Answer>("/web/query", {
       method: "POST",
-      body: JSON.stringify({ knowledge_base_id: baseId, question: text, request_id: attempt.requestId }),
-      timeoutMs: 240000,
+      body: JSON.stringify({ knowledge_base_id: baseId, question: text, request_id: attempt.requestId, suggestion_token: suggestionToken }),
+      timeoutMs: 300000,
       signal: queryController.signal,
     });
     if (sequence !== querySequence || selected.value !== baseId || disposed) return;
     answer.value = result;
+    // A completed response ends this attempt; an intentional new send may regenerate.
+    // Only network/in-flight retries reuse an unfinished request ID.
+    attempt = null;
   } catch (error) {
     if (sequence !== querySequence || disposed) return;
     queryError.value = errorMessage(error);
     // Network/provider errors and in-flight retries retain the original request ID.
     if (error instanceof ApiError && [40901, 40903].includes(error.code)) attempt = null;
+    if (error instanceof ApiError && error.code === 40903) selectedSuggestion.value = null;
   } finally {
     if (sequence === querySequence && !disposed) searching.value = false;
   }
@@ -140,6 +156,7 @@ async function ask() {
 function newQuestion() {
   answer.value = null;
   question.value = "";
+  selectedSuggestion.value = null;
   submittedQuestion.value = "";
   queryError.value = "";
   attempt = null;
@@ -199,7 +216,7 @@ onBeforeUnmount(() => {
           </template>
           <template v-else-if="suggestions.length">
             <span class="suggestion-note">你可能想问</span>
-            <button v-for="item in suggestions" :key="item.source.chunk_id" type="button" :title="`来自：${item.source.document_title}`" @click="question = item.question">
+            <button v-for="item in suggestions" :key="item.source.chunk_id" type="button" :title="`来自：${item.source.document_title}`" @click="useSuggestion(item)">
               <span>{{ item.question }}</span><el-icon><ArrowRight /></el-icon>
             </button>
           </template>
@@ -219,6 +236,8 @@ onBeforeUnmount(() => {
           <div class="answer-heading">
             <el-icon><ChatDotRound /></el-icon><strong>知识库回答</strong>
             <el-tag v-if="answer.answer_status === 'insufficient_evidence'" type="info" size="small">资料不足</el-tag>
+            <el-tag v-else-if="answer.answer_status === 'partial'" type="warning" size="small">部分内容有依据</el-tag>
+            <el-tag v-else-if="answer.answer_status === 'sources_only'" type="info" size="small">可查看相关资料</el-tag>
           </div>
           <div class="answer-body markdown-content" v-html="answerHtml"></div>
           <div v-if="sources.some((source) => source.source_id)" class="answer-citations">

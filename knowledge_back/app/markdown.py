@@ -11,7 +11,7 @@ class MarkdownChunk:
     line_end: int
 
 
-def _blocks(text: str):
+def markdown_blocks(text: str):
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     blocks = []
     current = []
@@ -66,7 +66,7 @@ def chunk_markdown(text: str, *, max_chars: int = 3200, overlap_chars: int = 300
         raise ValueError("invalid chunk configuration")
     headings: list[str | None] = [None] * 6
     grouped: list[tuple[str, str, int, int]] = []
-    for block, start, end in _blocks(text):
+    for block, start, end in markdown_blocks(text):
         path = ""
         for line in block.splitlines():
             path = _heading_path(line, headings)

@@ -11,6 +11,7 @@ from app.extensions import db
 from app.models import Document, DocumentChunk, DocumentVersion, KnowledgeBase, QALog, User, now
 
 qa_module = importlib.import_module("app.qa")
+grounding_module = importlib.import_module("app.grounding")
 retrieval_module = importlib.import_module("app.retrieval")
 TEXTS = [
     "安装设备前请检查电源和接地，确认连接线完好后接通电源。设备启动完成时状态灯会亮起，此时可以开始操作。",
@@ -66,7 +67,7 @@ def qa_setup(app, client, monkeypatch):
     embedding = Mock(return_value=([1.0, 0.0], "test-embedding"))
     completion = Mock(side_effect=AssertionError("Unexpected model call"))
     monkeypatch.setattr(retrieval_module, "embed_query", embedding)
-    monkeypatch.setattr(qa_module, "complete_json", completion)
+    monkeypatch.setattr(grounding_module, "complete_json", completion)
     monkeypatch.setattr(
         retrieval_module, "presign_get", Mock(return_value="https://media.test/file")
     )
@@ -115,11 +116,21 @@ def ask(client, setup, **values):
 
 
 def grounded_answer(_instruction, material, **_options):
+    if "draft" in material:
+        return {
+            "checks": [{"id": block["id"], "supported": True} for block in material["draft"]],
+            "complete": True,
+        }, "test-chat"
+    if "candidates" in material:
+        return {
+            "checks": [{"id": item["id"], "supported": True} for item in material["candidates"]]
+        }, "test-chat"
     source = material["sources"][0]
     return {
         "answerable": True,
-        "answer": f"{source['content']} [{source['source_id']}]",
-        "citations": [{"source_id": source["source_id"], "evidence": source["content"]}],
+        "blocks": [
+            {"text": source["passages"][0]["text"], "evidence_ids": [source["passages"][0]["id"]]}
+        ],
     }, "test-chat"
 
 
@@ -143,13 +154,14 @@ def test_suggestions_use_only_current_indexed_text_in_selected_base(app, client,
         db.session.commit()
 
     def generate(_instruction, material, **_options):
-        assert {source["chunk_id"] for source in material["sources"]} == set(qa_setup["chunks"])
+        if "candidates" in material:
+            return grounded_answer(_instruction, material, **_options)
+        assert {source["passages"][0]["text"] for source in material["sources"]} == set(TEXTS)
         return {
             "questions": [
                 {
-                    "question": QUESTIONS[TEXTS.index(source["content"])],
-                    "source_id": source["source_id"],
-                    "evidence": source["content"],
+                    "question": QUESTIONS[TEXTS.index(source["passages"][0]["text"])],
+                    "evidence_ids": [source["passages"][0]["id"]],
                 }
                 for source in material["sources"]
             ]
@@ -161,7 +173,7 @@ def test_suggestions_use_only_current_indexed_text_in_selected_base(app, client,
     data = response.get_json()["data"]
     assert data["status"] == "ready"
     assert {item["question"] for item in data["questions"]} == set(QUESTIONS)
-    qa_setup["completion"].assert_called_once()
+    assert qa_setup["completion"].call_count == 2
     qa_setup["embedding"].assert_not_called()
     with app.app_context():
         assert db.session.scalar(db.select(db.func.count()).select_from(QALog)) == 0
@@ -177,24 +189,19 @@ def test_empty_suggestions_do_not_call_model(client, qa_setup):
 
 def test_suggestions_drop_duplicate_questions_and_unverified_evidence(client, qa_setup):
     def generate(_instruction, material, **_options):
+        if "candidates" in material:
+            return {
+                "checks": [
+                    {"id": item["id"], "supported": item["question"] != QUESTIONS[2]}
+                    for item in material["candidates"]
+                ]
+            }, "test-chat"
         sources = material["sources"]
         return {
             "questions": [
-                {
-                    "question": QUESTIONS[0],
-                    "source_id": sources[0]["source_id"],
-                    "evidence": sources[0]["content"],
-                },
-                {
-                    "question": QUESTIONS[0],
-                    "source_id": sources[1]["source_id"],
-                    "evidence": sources[1]["content"],
-                },
-                {
-                    "question": QUESTIONS[2],
-                    "source_id": sources[2]["source_id"],
-                    "evidence": "正文里完全不存在的引用",
-                },
+                {"question": QUESTIONS[0], "evidence_ids": [sources[0]["passages"][0]["id"]]},
+                {"question": QUESTIONS[0], "evidence_ids": [sources[1]["passages"][0]["id"]]},
+                {"question": QUESTIONS[2], "evidence_ids": [sources[2]["passages"][0]["id"]]},
             ]
         }, "test-chat"
 
@@ -214,7 +221,7 @@ def test_query_replay_uses_one_generation_and_one_log(app, client, qa_setup):
     assert data["answer_status"] == "answered"
     assert data["sources"][0]["chunk_id"] in qa_setup["chunks"]
     assert data["sources"][0]["source_id"] == "1"
-    qa_setup["completion"].assert_called_once()
+    assert qa_setup["completion"].call_count == 2
     qa_setup["embedding"].assert_called_once()
     with app.app_context():
         logs = db.session.scalars(db.select(QALog)).all()
@@ -223,34 +230,51 @@ def test_query_replay_uses_one_generation_and_one_log(app, client, qa_setup):
         assert logs[0].retrieval_count == 3
 
 
-@pytest.mark.parametrize("invalid", ["unknown_source", "false_evidence", "missing_reference"])
-def test_invalid_answer_citations_fail_and_can_retry_same_request(app, client, qa_setup, invalid):
+def test_format_failure_repairs_before_writing_success_log(app, client, qa_setup):
+    attempts = []
+
     def generate(instruction, material, **options):
-        payload, model = grounded_answer(instruction, material, **options)
-        if invalid == "unknown_source":
-            payload["citations"][0]["source_id"] = "999"
-        elif invalid == "false_evidence":
-            payload["citations"][0]["evidence"] = "没有出现在资料中的事实"
-        else:
-            payload["answer"] = "没有引用编号的回答"
-        return payload, model
+        if "draft" in material:
+            return grounded_answer(instruction, material, **options)
+        attempts.append(material)
+        if len(attempts) == 1:
+            return {
+                "answerable": True,
+                "blocks": [{"text": "回答", "evidence_ids": ["unknown"]}],
+            }, "test-chat"
+        assert material["correction"]
+        return grounded_answer(instruction, material, **options)
 
     qa_setup["completion"].side_effect = generate
-    assert ask(client, qa_setup).status_code == 503
-    with app.app_context():
-        assert db.session.scalar(db.select(QALog)).status == "FAILED"
-    qa_setup["completion"].side_effect = grounded_answer
     assert ask(client, qa_setup).status_code == 200
+    assert len(attempts) == 2
     with app.app_context():
         logs = db.session.scalars(db.select(QALog)).all()
         assert len(logs) == 1
         assert logs[0].status == "SUCCESS"
-        assert logs[0].error_message is None
+
+
+def test_provider_failure_can_retry_the_same_request(app, client, qa_setup):
+    qa_setup["completion"].side_effect = grounding_module.ChatFormatError("格式错误")
+    response = ask(client, qa_setup)
+    assert response.status_code == 200
+    assert response.get_json()["data"]["answer_status"] == "sources_only"
+    with app.app_context():
+        assert db.session.scalar(db.select(QALog)).status == "SOURCES_ONLY"
+
+    qa_setup["completion"].side_effect = qa_module.ChatError("模型连接失败")
+    assert ask(client, qa_setup, request_id="network-retry").status_code == 503
+    qa_setup["completion"].side_effect = grounded_answer
+    assert ask(client, qa_setup, request_id="network-retry").status_code == 200
+    with app.app_context():
+        log = db.session.scalar(db.select(QALog).where(QALog.request_id == "network-retry"))
+        assert log.status == "SUCCESS"
+        assert log.error_message is None
 
 
 def test_low_similarity_skips_generation_and_records_insufficient_evidence(app, client, qa_setup):
     qa_setup["embedding"].return_value = ([-1.0, 0.0], "test-embedding")
-    response = ask(client, qa_setup)
+    response = ask(client, qa_setup, question="量子星系的观测参数？")
     assert response.status_code == 200
     assert response.get_json()["data"]["answer_status"] == "insufficient_evidence"
     assert response.get_json()["data"]["sources"] == []
@@ -299,7 +323,7 @@ def test_request_id_cannot_be_reused_for_another_request(app, client, qa_setup, 
     assert response.status_code == 409
     assert response.get_json()["code"] == 40901
     assert response.get_json()["data"] is None
-    qa_setup["completion"].assert_called_once()
+    assert qa_setup["completion"].call_count == 2
 
 
 def test_processing_request_waits_then_stale_request_can_be_reclaimed(app, client, qa_setup):
@@ -343,7 +367,7 @@ def test_archived_sources_in_new_or_replayed_answer_are_rejected(
         db.session.commit()
 
     def generate(instruction, material, **options):
-        if during_generation:
+        if during_generation and "sources" in material:
             archive_sources()
         return grounded_answer(instruction, material, **options)
 
@@ -356,15 +380,16 @@ def test_archived_sources_in_new_or_replayed_answer_are_rejected(
         response = ask(client, qa_setup)
     assert response.status_code == 409
     assert response.get_json()["code"] == 40903
-    qa_setup["completion"].assert_called_once()
+    assert qa_setup["completion"].call_count == 2
 
 
 def test_superseded_request_cannot_overwrite_newer_attempt(app, client, qa_setup):
     def generate(instruction, material, **options):
-        log = db.session.scalar(db.select(QALog))
-        log.updated_at = now() + timedelta(seconds=1)
-        log.answer = "由新请求维护"
-        db.session.commit()
+        if "sources" in material:
+            log = db.session.scalar(db.select(QALog))
+            log.updated_at = now() + timedelta(seconds=1)
+            log.answer = "由新请求维护"
+            db.session.commit()
         return grounded_answer(instruction, material, **options)
 
     qa_setup["completion"].side_effect = generate
@@ -397,3 +422,109 @@ def test_qa_requires_auth_and_active_base(app, client, qa_setup, path):
     response = client.post(f"/api/v1/web/{path}", json=payload, headers=qa_setup["headers"])
     assert response.status_code == 404
     qa_setup["completion"].assert_not_called()
+
+
+def test_recommended_question_retains_origin_when_search_misses(client, qa_setup):
+    selected_text = []
+
+    def completion(instruction, material, **options):
+        if "draft" in material or "candidates" in material:
+            return grounded_answer(instruction, material, **options)
+        if "question" not in material:
+            passage = material["sources"][0]["passages"][0]
+            selected_text.append(passage["text"])
+            return {
+                "questions": [
+                    {"question": "这项任务应该如何开始？", "evidence_ids": [passage["id"]]}
+                ]
+            }, "test-chat"
+        assert material["sources"][0]["passages"][0]["text"] == selected_text[0]
+        return grounded_answer(instruction, material, **options)
+
+    qa_setup["completion"].side_effect = completion
+    item = suggest(client, qa_setup).get_json()["data"]["questions"][0]
+    qa_setup["embedding"].return_value = ([-1.0, 0.0], "test-embedding")
+    response = ask(
+        client, qa_setup, question=item["question"], suggestion_token=item["suggestion_token"]
+    )
+    assert response.status_code == 200
+    assert response.get_json()["data"]["sources"][0]["chunk_id"] == item["source"]["chunk_id"]
+
+
+@pytest.mark.parametrize("change", ["base", "question", "token", "archived"])
+def test_recommendation_hint_cannot_bypass_scope_or_version_checks(app, client, qa_setup, change):
+    def completion(instruction, material, **options):
+        if "candidates" in material:
+            return grounded_answer(instruction, material, **options)
+        return {
+            "questions": [
+                {
+                    "question": QUESTIONS[0],
+                    "evidence_ids": [material["sources"][0]["passages"][0]["id"]],
+                }
+            ]
+        }, "test-chat"
+
+    qa_setup["completion"].side_effect = completion
+    item = suggest(client, qa_setup).get_json()["data"]["questions"][0]
+    values = {"question": item["question"], "suggestion_token": item["suggestion_token"]}
+    if change == "base":
+        values["knowledge_base_id"] = qa_setup["other_id"]
+    elif change == "question":
+        values["question"] = "改成另一个问题？"
+    elif change == "token":
+        values["suggestion_token"] += "tampered"
+    else:
+        with app.app_context():
+            db.session.get(Document, UUID(item["source"]["document_id"])).status = "archived"
+            db.session.commit()
+    response = ask(client, qa_setup, **values)
+    assert response.status_code == 409
+    assert response.get_json()["code"] == 40903
+    assert qa_setup["completion"].call_count == 2
+
+
+def test_global_overview_covers_documents_without_embedding(client, qa_setup):
+    qa_setup["completion"].side_effect = grounded_answer
+    response = ask(client, qa_setup, question="这个里面包含一些什么内容")
+    assert response.status_code == 200
+    qa_setup["embedding"].assert_not_called()
+    generation = qa_setup["completion"].call_args_list[0].args[1]
+    assert generation["scope"]["total_documents"] == 3
+    assert len(generation["sources"]) == 3
+
+
+def test_workflow_uses_title_and_sections_when_semantic_search_misses(app, client, qa_setup):
+    with app.app_context():
+        first = add_chunk(UUID(qa_setup["base_id"]), content="准备阶段先检查供电和连接线。")
+        first.heading_path = "准备"
+        version = db.session.get(DocumentVersion, first.document_version_id)
+        db.session.get(Document, version.document_id).title = "Aloha Mini 使用指南"
+        for index, heading in enumerate(["启动", "操作", "后续"], 1):
+            db.session.add(
+                DocumentChunk(
+                    document_version_id=version.id,
+                    chunk_index=index,
+                    heading_path=heading,
+                    content=f"{heading}阶段按资料中给出的命令检查状态并完成操作。",
+                    embedding=[1.0, 0.0],
+                    chunk_metadata={"modality": "text"},
+                )
+            )
+        # An identically named document in another KB must never enter context.
+        foreign = add_chunk(UUID(qa_setup["other_id"]), content="不属于此知识库的操作资料")
+        foreign_version = db.session.get(DocumentVersion, foreign.document_version_id)
+        db.session.get(Document, foreign_version.document_id).title = "Aloha Mini 使用指南"
+        db.session.commit()
+    qa_setup["embedding"].return_value = ([-1.0, 0.0], "test-embedding")
+    qa_setup["completion"].side_effect = grounded_answer
+    response = ask(client, qa_setup, question="alohamini的使用流程大概是怎么样的")
+    assert response.status_code == 200
+    generation = qa_setup["completion"].call_args_list[0].args[1]
+    assert generation["scope"]["mode"] == "workflow"
+    assert {source["heading"] for source in generation["sources"]} == {
+        "准备",
+        "启动",
+        "操作",
+        "后续",
+    }
