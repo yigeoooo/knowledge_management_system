@@ -139,7 +139,7 @@ SCHEMA = {
             "sources": "回答引用来源的 JSON 数据，包含文档、版本、标题路径和片段。",
             "retrieval_count": "本次向量检索实际召回的切片数量。",
             "model_name": "本次答案生成使用的大语言模型名称。",
-            "status": "问答结果：SUCCESS 成功、FAILED 失败。",
+            "status": "问答状态：PROCESSING 处理中、SUCCESS 成功、NO_EVIDENCE 依据不足、FAILED 失败。",
             "latency_ms": "完整问答请求处理耗时，单位为毫秒。",
         },
     ),

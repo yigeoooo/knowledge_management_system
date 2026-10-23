@@ -91,8 +91,6 @@ Authorization: Bearer <access_token>
 {
   "knowledge_base_id": "kb-uuid",
   "question": "如何部署系统？",
-  "top_k": 5,
-  "stream": false,
   "request_id": "web-req-001"
 }
 ```
@@ -105,9 +103,13 @@ Authorization: Bearer <access_token>
 - 没有检索依据时的明确提示
 - 超时、登录失效和模型服务失败提示
 
+进入页面和切换知识库时，调用 `POST /api/v1/web/suggested-questions`，请求只含 `knowledge_base_id`。展示返回的最多三个 `questions`，点击后填入输入框；加载期间显示骨架，失败提供重试，空知识库不使用写死问题补位。
+
+问答为单轮非流式；答案通过共享的 Markdown 渲染器及 DOMPurify 展示，保留编号引用与来源。网络错误重试复用 `request_id`，同一请求不会重复写日志。推荐超时为 110 秒，问答超时为 240 秒；切换知识库或离开页面取消当前请求并丢弃迟到响应。没有依据时展示 `insufficient_evidence` 状态。
+
 ## 6. 管理页面
 
-超级管理员页面调用 Flask 管理接口完成数据修改。知识库页面支持创建、编辑、停用和归档；创建成功后可直接进入该知识库的文档管理页面。文档必须先选择所属知识库；上传 Markdown、TXT、PDF、Word、图片或视频时，前端先请求预签名地址，然后上传到 MinIO，最后调用上传完成接口触发索引任务。预签名上传失败时使用同源回退接口。前端不直接使用 MinIO Access Key。Markdown/TXT 可在线编辑并保存为新版本，其他类型通过上传新版本更新。问答页面调用 `/web/search`，文字查询可返回文本、图片和视频来源。
+超级管理员页面调用 Flask 管理接口完成数据修改。知识库页面支持创建、编辑、停用和归档；创建成功后可直接进入该知识库的文档管理页面。文档必须先选择所属知识库；上传 Markdown、TXT、PDF、Word、图片或视频时，前端先请求预签名地址，然后上传到 MinIO，最后调用上传完成接口触发索引任务。预签名上传失败时使用同源回退接口。前端不直接使用 MinIO Access Key。Markdown/TXT 可在线编辑并保存为新版本，其他类型通过上传新版本更新。问答页面调用 `/web/query` 获取回答及来源；`/web/search` 保留为纯检索接口。
 
 文档修改应按新版本提交；文档删除、知识库停用、机器人停用和用户停用都需要显示二次确认，并在操作完成后刷新后端状态。
 

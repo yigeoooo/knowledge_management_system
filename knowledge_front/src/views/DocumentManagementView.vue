@@ -14,19 +14,7 @@ import {
   RefreshRight,
 } from "@element-plus/icons-vue";
 import { api, uploadFile } from "../lib/session";
-import { marked } from "marked";
-import hljs from "highlight.js";
-// 深色hljs主题，解决代码块白底问题
-import "highlight.js/styles/github-dark.css";
-
-marked.setOptions({
-  gfm: true,
-  breaks: false, // 标准markdown：两个回车才换行
-  highlight: function (code, lang) {
-    const language = hljs.getLanguage(lang) ? lang : "plaintext";
-    return hljs.highlight(code, { language }).value;
-  },
-});
+import { renderMarkdown } from "../lib/markdown";
 
 const route = useRoute();
 interface KnowledgeBase {
@@ -112,11 +100,11 @@ let indexPollAttempts = 0;
 
 const renderedPreviewHtml = computed(() => {
   if (!previewText.value) return "";
-  return marked.parse(previewText.value) as string;
+  return renderMarkdown(previewText.value);
 });
 const renderedEditorPreviewHtml = computed(() => {
   if (!editorText.value) return "";
-  return marked.parse(editorText.value) as string;
+  return renderMarkdown(editorText.value);
 });
 
 const selectedVersion = computed(
@@ -937,7 +925,7 @@ onBeforeUnmount(stopIndexPolling);
         <el-input
           v-model="editorText"
           type="textarea"
-          :rows="null"
+          :rows="20"
           resize="none"
         />
         <div class="markdown-preview">

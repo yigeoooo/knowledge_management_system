@@ -22,6 +22,38 @@ def _uuid(value):
         raise ApiError("知识库 ID 格式不正确", 422) from None
 
 
+def require_knowledge_base(value):
+    knowledge_base = db.session.get(KnowledgeBase, _uuid(value), populate_existing=True)
+    if knowledge_base is None or knowledge_base.status != "active":
+        raise ApiError("知识库不存在或已停用", 404, 40401)
+    return knowledge_base
+
+
+def validate_question(value):
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 2000:
+        raise ApiError("问题需为 1–2000 个字符", 422)
+    value = value.strip()
+    if any((ord(c) < 32 and c not in "\r\n\t") or ord(c) == 127 for c in value):
+        raise ApiError("问题不能包含控制字符", 422)
+    return value
+
+
+def available_chunks(knowledge_base_id, model):
+    """One eligibility rule shared by search, recommendations and answer validation."""
+    return (
+        db.select(DocumentChunk, DocumentVersion, Document)
+        .join(DocumentVersion, DocumentVersion.id == DocumentChunk.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .where(
+            Document.knowledge_base_id == knowledge_base_id,
+            Document.status == "active",
+            Document.current_version_id == DocumentVersion.id,
+            DocumentVersion.status == "INDEXED",
+            DocumentVersion.embedding_model == model,
+        )
+    )
+
+
 def _cosine(left, right):
     if not isinstance(left, list) or len(left) != len(right):
         return None
@@ -40,6 +72,7 @@ def _source(chunk, version, document, score):
     metadata = chunk.chunk_metadata if isinstance(chunk.chunk_metadata, dict) else {}
     modality = metadata.get("modality", "text")
     source = {
+        "chunk_id": str(chunk.id),
         "document_id": str(document.id),
         "document_title": document.title,
         "version_id": str(version.id),
@@ -50,7 +83,21 @@ def _source(chunk, version, document, score):
         "heading_path": chunk.heading_path,
         "content": None if modality != "text" else chunk.content,
     }
-    if modality != "text":
+    return source
+
+
+def with_preview_urls(sources):
+    """Generate fresh media links at response time; never persist signed URLs in logs."""
+    result = []
+    for original in sources:
+        source = dict(original)
+        result.append(source)
+        if source.get("modality") not in {"image", "video"}:
+            continue
+        version = db.session.get(DocumentVersion, UUID(source["version_id"]))
+        if version is None:
+            source["preview_url"] = None
+            continue
         try:
             source["preview_url"] = presign_get(
                 version.minio_object_key,
@@ -64,7 +111,32 @@ def _source(chunk, version, document, score):
             # A search hit is still useful when object storage is temporarily
             # unavailable; the document preview endpoint can be retried.
             source["preview_url"] = None
-    return source
+    return result
+
+
+def search_sources(knowledge_base_id, question, *, top_k=15):
+    query_vector, model = embed_query(question)
+    query = available_chunks(knowledge_base_id, model)
+    if db.engine.dialect.name == "postgresql":
+        distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
+        rows = db.session.execute(query.add_columns(distance).order_by(distance).limit(top_k)).all()
+        sources = [
+            _source(chunk, version, document, 1.0 - distance)
+            for chunk, version, document, distance in rows
+            if distance is not None and math.isfinite(distance)
+        ]
+    else:
+        scored = []
+        for chunk, version, document in db.session.execute(query):
+            score = _cosine(chunk.embedding, query_vector)
+            if score is not None and math.isfinite(score):
+                scored.append((score, chunk, version, document))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        sources = [
+            _source(chunk, version, document, score)
+            for score, chunk, version, document in scored[:top_k]
+        ]
+    return sources, model
 
 
 @retrieval.post("/web/search")
@@ -74,16 +146,8 @@ def vector_search():
     allowed = {"knowledge_base_id", "question", "top_k"}
     if not isinstance(body, dict) or set(body) - allowed:
         raise ApiError("请提交知识库 ID 和问题", 422)
-    question = body.get("question")
-    if not isinstance(question, str) or not 1 <= len(question.strip()) <= 2000:
-        raise ApiError("问题需为 1–2000 个字符", 422)
-    question = question.strip()
-    if any(ord(character) < 32 and character not in "\r\n\t" for character in question):
-        raise ApiError("问题不能包含控制字符", 422)
-    knowledge_base_id = _uuid(body.get("knowledge_base_id"))
-    knowledge_base = db.session.get(KnowledgeBase, knowledge_base_id)
-    if knowledge_base is None or knowledge_base.status != "active":
-        raise ApiError("知识库不存在或已停用", 404, 40401)
+    question = validate_question(body.get("question"))
+    knowledge_base_id = require_knowledge_base(body.get("knowledge_base_id")).id
     try:
         top_k = int(body.get("top_k", 10))
     except (TypeError, ValueError):
@@ -91,33 +155,15 @@ def vector_search():
     if not 1 <= top_k <= 20:
         raise ApiError("召回数量需在 1–20 之间", 422)
     try:
-        query_vector, model = embed_query(question)
+        sources, model = search_sources(knowledge_base_id, question, top_k=top_k)
     except EmbeddingError as error:
         raise ApiError(str(error), 503, 50301) from error
 
-    query = (
-        db.select(DocumentChunk, DocumentVersion, Document)
-        .join(DocumentVersion, DocumentVersion.id == DocumentChunk.document_version_id)
-        .join(Document, Document.id == DocumentVersion.document_id)
-        .where(
-            Document.knowledge_base_id == knowledge_base_id,
-            Document.status == "active",
-            Document.current_version_id == DocumentVersion.id,
-            DocumentVersion.status == "INDEXED",
-            DocumentVersion.embedding_model == model,
-        )
+    return success(
+        {
+            "knowledge_base_id": str(knowledge_base_id),
+            "model": model,
+            "question": question,
+            "sources": with_preview_urls(sources),
+        }
     )
-    if db.engine.dialect.name == "postgresql":
-        distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
-        rows = db.session.execute(query.add_columns(distance).order_by(distance).limit(top_k)).all()
-        sources = [_source(chunk, version, document, 1.0 - distance) for chunk, version, document, distance in rows]
-    else:
-        rows = db.session.execute(query).all()
-        scored = []
-        for chunk, version, document in rows:
-            score = _cosine(chunk.embedding, query_vector)
-            if score is not None:
-                scored.append((score, chunk, version, document))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        sources = [_source(chunk, version, document, score) for score, chunk, version, document in scored[:top_k]]
-    return success({"knowledge_base_id": str(knowledge_base_id), "model": model, "question": question, "sources": sources})

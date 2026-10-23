@@ -15,19 +15,29 @@ const base = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 export const apiBase = base
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number) { super(message) }
+  constructor(message: string, public status: number, public code = 0) { super(message) }
 }
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+interface ApiRequestOptions extends RequestInit { timeoutMs?: number }
+async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { timeoutMs = 15000, signal, ...init } = options
+  const timeout = AbortSignal.timeout(timeoutMs)
   let response: Response
   try {
     response = await fetch(`${base}${path}`, {
-      ...options, credentials: 'include', signal: AbortSignal.timeout(15000),
+      ...init, credentials: 'include', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options.headers },
     })
-  } catch { throw new ApiError('连接服务失败，请检查网络后重试', 0) }
-  const body = await response.json().catch(() => null)
+  } catch {
+    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
+    throw new ApiError(timeout.aborted ? '请求超时，请点击重试获取结果' : '连接服务失败，请检查网络后重试', 0)
+  }
+  const body = await response.json().catch(() => {
+    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
+    if (timeout.aborted) throw new ApiError('请求超时，请点击重试获取结果', 0)
+    return null
+  })
   if (!response.ok || !body || body.code !== 0) {
-    throw new ApiError(body?.message || '服务暂不可用，请稍后再试', response.status)
+    throw new ApiError(body?.message || '服务暂不可用，请稍后再试', response.status, body?.code)
   }
   return body.data as T
 }
@@ -60,7 +70,7 @@ export async function restore() {
     if (error instanceof ApiError && error.status !== 401) throw error
   }
 }
-export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+export async function api<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   try { return await request<T>(path, options) } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 401) throw error
     try { await refresh() } catch (refreshError) {

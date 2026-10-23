@@ -61,7 +61,7 @@ POSTGRES_USER=root
 POSTGRES_PASSWORD=填写你的数据库密码
 ```
 
-这里的 `POSTGRES_PASSWORD` 是 **PostgreSQL 连接密码**，与后文 Root 网页登录密码无关。MinIO、DeepSeek 和 DashScope 的配置项先保留在后端文件中，后续接入相应业务时再配置实际值；禁止放入前端 `VITE_*` 环境变量。
+这里的 `POSTGRES_PASSWORD` 是 **PostgreSQL 连接密码**，与后文 Root 网页登录密码无关。文档存储需要 MinIO，索引和检索需要 DashScope，推荐问题和回答生成需要 DeepSeek；在后端文件中配置实际值，禁止放入前端 `VITE_*` 环境变量。
 
 本地开发时 JWT 密钥自动生成在被 Git 忽略的 `knowledge_back/.runtime/jwt-secret`。也可以在 `.env.local` 中设置至少 32 字符的 `JWT_SECRET_KEY`。非本地环境必须显式设置此密钥，并通过 HTTPS 访问。
 
@@ -200,7 +200,7 @@ npm run build
 | 品牌首页     | `/`                 | 已实现，公开访问，适配移动端                                                 |
 | 登录         | `/login`            | 已接入真实认证、校验和错误提示                                               |
 | 工作台       | `/dashboard`        | 数据库统计与快捷入口                                                         |
-| 知识问答     | `/qa`               | 页面框架、知识库选择、问题输入；模型服务待接入                               |
+| 知识问答     | `/qa`               | 基于文档的动态推荐问题、单轮问答、编号引用、来源预览和失败重试                 |
 | 知识库管理   | `/knowledge-bases`  | 创建、编辑、停用、归档和分页搜索；写操作仅限 `super_admin`                   |
 | 文档管理     | `/documents`        | 按知识库管理 Markdown、TXT、PDF、Word、图片和视频；支持 MinIO 上传、预览、下载、在线文本编辑、版本与索引任务 |
 | 机器人管理   | `/robots`           | 数据库列表和搜索；注册和状态编辑待开发                                       |
@@ -263,7 +263,17 @@ Worker 从 MinIO 读取文件。Markdown、TXT、PDF 和 DOCX 会提取文本、
 
 认证已实现：Argon2 密码校验、15 分钟 Access Token、HttpOnly 刷新 Cookie、刷新令牌轮换、退出撤销、后端管理接口鉴权以及动态页面路由。Access Token 只保存在前端内存，刷新页面时通过 Cookie 恢复会话。
 
-后续按页面完善 DeepSeek 问答、机器人查询及其他管理操作。知识库管理已接入 CRUD、状态控制、审计和独立 MinIO Bucket；文档管理已接入 MinIO 对象存储、版本、预览、下载、在线 Markdown/TXT 编辑、PDF/DOCX 文本提取和 PostgreSQL 索引任务。生产环境可以继续使用独立的 `uv run flask --app app index-worker` 进程作为任务恢复和扩展吞吐的 Worker。
+### 知识问答与推荐问题
+
+进入 `/qa` 或切换知识库时，页面通过 `POST /api/v1/web/suggested-questions` 从当前启用知识库中随机抽取已索引的当前版本文本，优先不同文档和章节，由 DeepSeek 整理最多三个可回答的问题。点击推荐只填入输入框，用户点击发送后才开始问答。内容不足时可以少于三条；图片、视频及未索引文档不会被编造成推荐问题。推荐不缓存、不写入问答日志，失败时支持重试，仍可直接输入问题。
+
+发送问题调用 `POST /api/v1/web/query`，由 DashScope 向量检索召回最多 15 个片段，再按相似度、重复内容和长度筛选最多 6 个文本片段交给 DeepSeek。答案完整返回，支持 Markdown、表格和代码块，引用编号对应右侧文档来源；媒体检索结果单独作为相关资料展示。没有足够文字依据时明确提示，不推断图片或视频中的内容。本期为单轮、非流式问答，不携带上一次问题作为上下文；`/web/search` 仍保留为纯检索接口。
+
+后端 `.env.local` 需要有效的 `DEEPSEEK_BASE_URL`、`DEEPSEEK_API_KEY`、`DEEPSEEK_CHAT_MODEL` 和现有 DashScope 配置。`DEEPSEEK_TIMEOUT_SECONDS` 默认 60 秒（限制在 5–90 秒）；`QA_MIN_SIMILARITY` 默认 0.3，应按真实文档和问题调优。前端推荐请求超时 110 秒，问答请求超时 240 秒；生产反向代理和 Gunicorn 的超时也应覆盖这一时长。
+
+问答记录使用现有 `qa_logs`，状态为处理中、成功、依据不足或失败。同一用户、知识库、问题和 `request_id` 的成功结果可复用；处理中返回冲突提示，失败可以用相同编号重试，超过 10 分钟的遗留处理中记录允许重新接管。跨用户或不同问题复用编号会被拒绝。无需改表或重新导入 `init.sql`；如需同步字段备注，可执行 `knowledge_back/sql/2026-10-23-knowledge-qa.sql`。修改配置或后端代码后重启 Flask。
+
+后续按页面完善机器人查询及其他管理操作。知识库管理已接入 CRUD、状态控制、审计和独立 MinIO Bucket；文档管理已接入 MinIO 对象存储、版本、预览、下载、在线 Markdown/TXT 编辑、PDF/DOCX 文本提取和 PostgreSQL 索引任务。生产环境可以继续使用独立的 `uv run flask --app app index-worker` 进程作为任务恢复和扩展吞吐的 Worker。
 
 ## 7. 常见问题
 

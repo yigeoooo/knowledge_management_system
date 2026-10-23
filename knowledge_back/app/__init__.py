@@ -20,6 +20,7 @@ def create_app(overrides=None):
     from .auth import auth
     from .cli import register_cli
     from .documents import documents
+    from .qa import qa
     from .retrieval import retrieval
     from .roles import roles
     from .users import users
@@ -27,6 +28,7 @@ def create_app(overrides=None):
 
     app.register_blueprint(auth)
     app.register_blueprint(documents)
+    app.register_blueprint(qa)
     app.register_blueprint(roles)
     app.register_blueprint(retrieval)
     app.register_blueprint(workspace)

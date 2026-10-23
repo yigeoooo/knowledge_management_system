@@ -167,16 +167,16 @@ knowledge_base 状态为 active
 网页提问必须验证登录状态。
 
 1. 用户登录后进入知识问答页面 `/qa`。
-2. 用户选择知识库并输入问题。
+2. 页面选择知识库后，从该库已索引的当前文档中随机抽取文本，生成最多三个推荐问题；切换知识库时重新生成。用户点击推荐填入输入框，也可直接输入问题。
 3. 前端调用网页提问接口，携带 Bearer Token。
 4. 后端验证 Token、用户状态和知识库状态。
 5. 后端调用与文档相同的阿里云百炼多模态 Embedding 模型处理问题文字。
 6. 在指定知识库中检索状态为 `INDEXED` 且仍是当前版本的文档切片；文本、图片和视频向量可以直接进行跨模态相似度比较。
 7. 可选使用关键词检索或重排模型提高召回质量。
-8. 将问题、检索片段和来源信息提交给大语言模型。
+8. 本期召回最多 15 个切片，经相似度阈值、去重和长度预算筛选最多 6 个文本片段，将问题、文本和来源信息提交给 DeepSeek。图片、视频只展示为相关资料，不用于推断媒体内容。
 9. 要求模型只根据检索内容回答，无法找到依据时明确说明。
 10. 返回答案、来源文档、标题和请求编号。
-11. 将问答记录写入 `qa_logs`。
+11. 将问答记录写入 `qa_logs`，推荐问题不写问答日志。本期为单轮非流式问答，重试使用相同 `request_id` 复用结果或重新处理失败记录。
 
 ### 4.7 机器人提问流程
 
@@ -444,7 +444,7 @@ CREATE INDEX idx_chunks_embedding
 | sources | jsonb |  | 来源文档和标题 |
 | retrieval_count | integer |  | 召回数量 |
 | model_name | varchar(200) |  | 大模型名称 |
-| status | varchar(30) | NOT NULL | `SUCCESS`/`FAILED` |
+| status | varchar(30) | NOT NULL | `PROCESSING`/`SUCCESS`/`NO_EVIDENCE`/`FAILED` |
 | error_message | text |  | 错误信息 |
 | latency_ms | integer |  | 总耗时 |
 | created_at | timestamp | NOT NULL | 创建时间 |
@@ -617,8 +617,9 @@ CREATE INDEX idx_chunks_embedding
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| POST | `/web/query` | 登录用户 | 网页模拟提问 |
-| GET | `/web/qa-logs` | 登录用户 | 查看自己的问答记录 |
+| POST | `/web/suggested-questions` | 登录用户 | 从当前知识库文档生成最多三个推荐问题 |
+| POST | `/web/query` | 登录用户 | 单轮非流式问答，返回答案与引用 |
+| GET | `/web/qa-logs` | 登录用户 | 规划：查看自己的问答记录，尚未实现 |
 
 请求示例：
 
@@ -626,11 +627,15 @@ CREATE INDEX idx_chunks_embedding
 {
   "knowledge_base_id": "kb-uuid",
   "question": "如何部署系统？",
-  "top_k": 5,
-  "stream": false,
   "request_id": "web-req-001"
 }
 ```
+
+`question` 为 1–2000 字，`request_id` 为 1–100 位字母、数字或 `._-`；本期不接受 `top_k`、`stream` 或历史消息参数。成功响应的 `data` 含 `request_id`、`knowledge_base_id`、`question`、`answer`、`answer_status`（`answered` / `insufficient_evidence`）、`sources`、`model`、`latency_ms`。文本来源带 `source_id`（答案引用编号）、`chunk_id`、文档和版本信息、标题路径、片段正文与相似度；相关媒体来源不带引用编号，预览链接在返回时生成，不存入日志。
+
+推荐接口仅接受 `{"knowledge_base_id":"kb-uuid"}`，返回 `knowledge_base_id`、`status`（`ready` / `empty`）和 `questions` 数组；每项含 `question` 及 `source`（切片、文档、版本、标题路径）。仅使用当前模型索引的当前文本版本，每次请求重新随机抽样，不缓存，依据不足时返回少于三条或空数组。推荐失败不影响用户手动提问。
+
+同一请求编号绑定用户、知识库和问题。冲突码 `40901` 表示编号已用于其他请求，`40902` 表示正在处理或被重试接管，`40903` 表示引用文档已更新；前端在 `40901` / `40903` 后使用新编号重试，网络失败及 `40902` 保留原编号。已完成结果重新返回前也会校验引用是否仍属于当前可用版本。模型失败返回 `503`，不返回服务商原始错误内容或密钥。推荐限每用户每分钟 12 次，问答限 20 次。
 
 ### 7.7 机器人提问
 

@@ -433,7 +433,7 @@ COMMENT ON COLUMN qa_logs.retrieval_count IS '本次向量检索实际召回的�
 
 COMMENT ON COLUMN qa_logs.model_name IS '本次答案生成使用的大语言模型名称。';
 
-COMMENT ON COLUMN qa_logs.status IS '问答结果：SUCCESS 成功、FAILED 失败。';
+COMMENT ON COLUMN qa_logs.status IS '问答状态：PROCESSING 处理中、SUCCESS 成功、NO_EVIDENCE 依据不足、FAILED 失败。';
 
 COMMENT ON COLUMN qa_logs.error_message IS '操作失败的可读原因；不得写入密钥或密码。';
 
