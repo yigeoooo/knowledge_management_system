@@ -22,6 +22,7 @@ def create_app(overrides=None):
     from .documents import documents
     from .qa import qa
     from .retrieval import retrieval
+    from .robots import robots
     from .roles import roles
     from .users import users
     from .workspace import workspace
@@ -31,6 +32,7 @@ def create_app(overrides=None):
     app.register_blueprint(qa)
     app.register_blueprint(roles)
     app.register_blueprint(retrieval)
+    app.register_blueprint(robots)
     app.register_blueprint(workspace)
     app.register_blueprint(users)
     register_cli(app)

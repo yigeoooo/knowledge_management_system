@@ -93,3 +93,84 @@ test('document download uses the selected version id', async ({ page }) => {
   await expect.poll(() => downloadUrls.length).toBe(2)
   expect(downloadUrls.at(-1)?.searchParams.get('version_id')).toBe(versionId)
 })
+
+test('robot management supports create, detail, edit, and disable', async ({ page }) => {
+  const robotId = '00000000-0000-4000-8000-000000000010'
+  let robot = {
+    id: robotId,
+    serial_no: 'ROBOT-001',
+    name: '一号机器人',
+    description: '初始设备',
+    status: 'active',
+    last_request_at: null,
+    created_by: 'admin',
+    created_at: '2026-10-23T00:00:00Z',
+    updated_at: '2026-10-23T00:00:00Z',
+  }
+  let created = false
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    let data: unknown
+    if (url.pathname === '/api/v1/auth/refresh') {
+      data = {
+        access_token: 'test-token',
+        user: { id: 'admin', username: 'admin', display_name: 'Admin', role: 'super_admin' },
+        pages: [{
+          code: 'robots', name: '机器人管理', route_path: '/robots', route_name: 'RobotManagement',
+          component_key: 'RobotManagement', page_type: 'menu', sort_order: 1, is_visible: true,
+        }],
+      }
+    } else if (url.pathname === '/api/v1/robots' && request.method() === 'GET') {
+      const status = url.searchParams.get('status')
+      const q = (url.searchParams.get('q') || '').toLowerCase()
+      const items = created && (!status || robot.status === status) &&
+        (!q || `${robot.serial_no} ${robot.name}`.toLowerCase().includes(q)) ? [robot] : []
+      data = { items, total: items.length, page: 1, page_size: 20 }
+    } else if (url.pathname === `/api/v1/robots/${robotId}` && request.method() === 'GET') {
+      data = robot
+    } else if (url.pathname === '/api/v1/robots' && request.method() === 'POST') {
+      const body = request.postDataJSON()
+      robot = { ...robot, ...body }
+      created = true
+      data = robot
+    } else if (url.pathname === `/api/v1/robots/${robotId}` && request.method() === 'PUT') {
+      robot = { ...robot, ...request.postDataJSON() }
+      data = robot
+    } else if (url.pathname === `/api/v1/robots/${robotId}` && request.method() === 'DELETE') {
+      robot = { ...robot, status: 'disabled' }
+      data = { id: robotId, status: robot.status }
+    } else {
+      throw new Error(`Unexpected API request: ${request.method()} ${url.pathname}`)
+    }
+    await route.fulfill({ json: { code: 0, message: 'ok', data } })
+  })
+
+  await page.goto('/robots')
+  await expect(page.getByText('暂无机器人，请先注册一台设备')).toBeVisible()
+  await page.getByRole('button', { name: '注册机器人', exact: true }).click()
+  await page.getByPlaceholder('例如：ROBOT-001').fill('ROBOT-001')
+  await page.getByPlaceholder('例如：一号巡检机器人').fill('一号机器人')
+  await page.getByPlaceholder('说明设备用途或所在场景').fill('初始设备')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('一号机器人')).toBeVisible()
+
+  await page.getByRole('button', { name: '详情', exact: true }).click()
+  await expect(page.getByText('ROBOT-001')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.el-drawer')).toBeHidden()
+
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  const nameInput = page.getByPlaceholder('例如：一号巡检机器人')
+  await expect(nameInput).toBeEnabled()
+  await nameInput.fill('更新后的机器人')
+  await expect(page.locator('.el-dialog').getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+  const updateRequest = page.waitForRequest(request => request.method() === 'PUT' && request.url().endsWith(`/api/v1/robots/${robotId}`))
+  await page.locator('.el-dialog').getByRole('button', { name: '保存', exact: true }).click()
+  await updateRequest
+  await expect(page.getByText('更新后的机器人')).toBeVisible()
+
+  await page.getByRole('button', { name: '停用', exact: true }).click()
+  await page.getByRole('button', { name: '确认停用', exact: true }).click()
+  await expect(page.locator('.el-table__body-wrapper .el-tag', { hasText: '停用' })).toBeVisible()
+})

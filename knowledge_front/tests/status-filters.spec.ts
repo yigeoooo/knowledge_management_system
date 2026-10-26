@@ -6,7 +6,7 @@ const screens = [
   { path: '/documents', component: 'DocumentManagement', selector: '.table-toolbar .el-select', other: 'archived', label: '已归档' },
   { path: '/users', component: 'UserManagement', selector: '.users-filters .el-select', other: 'disabled', label: '停用' },
   { path: '/roles', component: 'RoleManagement', selector: '.roles-filters .el-select', other: 'disabled', label: '停用' },
-  { path: '/robots', component: 'RobotManagement', selector: '.table-toolbar .el-select', other: 'disabled', label: '停用' },
+  { path: '/robots', component: 'RobotManagement', selector: '.robots-filters .el-select', other: 'disabled', label: '停用' },
   { path: '/pages', component: 'PageManagement', selector: '.table-toolbar .el-select', other: 'disabled', label: '停用' },
 ]
 

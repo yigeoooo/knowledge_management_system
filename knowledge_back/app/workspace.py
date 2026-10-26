@@ -63,11 +63,6 @@ RESOURCES = {
         ["id", "title", "knowledge_base_id", "current_version_id", "status", "updated_at"],
         "title",
     ),
-    "robots": (
-        Robot,
-        ["id", "serial_no", "name", "description", "status", "last_request_at"],
-        "serial_no",
-    ),
     "qa-logs": (
         QALog,
         ["id", "request_id", "question", "source_type", "status", "latency_ms", "created_at"],
