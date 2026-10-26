@@ -399,15 +399,17 @@ function changeVersion() {
   void loadVersionContent();
 }
 
-async function downloadVersion(version = selectedVersion.value) {
-  if (!detail.value || !version) return;
+async function downloadVersion(version?: Version | null) {
+  const targetVersion = version ?? selectedVersion.value;
+  if (!detail.value || !targetVersion) return;
   try {
+    const params = new URLSearchParams({ version_id: targetVersion.id });
     const res = await api<{ download_url: string }>(
-      `/documents/${detail.value.id}/download-url?version_id=${version.id}`
+      `/documents/${detail.value.id}/download-url?${params}`
     );
     const link = document.createElement("a");
     link.href = res.download_url;
-    link.download = version.filename;
+    link.download = targetVersion.filename;
     link.target = "_blank";
     link.click();
   } catch (e) {
@@ -905,7 +907,7 @@ onBeforeUnmount(stopIndexPolling);
           </el-button>
           <el-button
             :icon="Download"
-            @click="downloadVersion"
+            @click="downloadVersion()"
           >
             下载
           </el-button>

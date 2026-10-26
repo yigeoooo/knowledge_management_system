@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import {
   ArrowRight,
   ArrowDown,
@@ -14,6 +14,69 @@ import {
 import BrandLogo from "../components/BrandLogo.vue";
 import KnowledgeVisual from "../components/KnowledgeVisual.vue";
 const menuOpen = ref(false);
+const activeNav = ref("home");
+const pendingNav = ref<string | null>(null);
+let scrollFrame = 0;
+let pendingNavTimer = 0;
+
+function selectNav(id: string) {
+  pendingNav.value = id === "home" ? null : id;
+  activeNav.value = id;
+  if (pendingNavTimer) window.clearTimeout(pendingNavTimer);
+  if (id !== "home") {
+    pendingNavTimer = window.setTimeout(() => {
+      pendingNav.value = null;
+      updateActiveNav();
+    }, 1500);
+  }
+}
+
+function updateActiveNav() {
+  const header = document.querySelector<HTMLElement>(".site-header");
+  if (pendingNav.value) {
+    const target = document.getElementById(pendingNav.value);
+    const headerHeight = header?.offsetHeight || 0;
+    const targetTop = target
+      ? target.getBoundingClientRect().top + window.scrollY - headerHeight
+      : 0;
+    // Keep the clicked item highlighted while the browser performs smooth
+    // scrolling in either direction. The normal position calculation resumes
+    // once the target section reaches the sticky header.
+    if (target && Math.abs(window.scrollY - targetTop) > 24) return;
+    pendingNav.value = null;
+    if (pendingNavTimer) {
+      window.clearTimeout(pendingNavTimer);
+      pendingNavTimer = 0;
+    }
+  }
+  const marker = window.scrollY + (header?.offsetHeight || 0) + 24;
+  let active = "home";
+  for (const id of ["capabilities", "workflow", "scenarios"]) {
+    const section = document.getElementById(id);
+    if (section && section.getBoundingClientRect().top + window.scrollY <= marker) active = id;
+  }
+  activeNav.value = active;
+}
+
+function handleScroll() {
+  if (scrollFrame) return;
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0;
+    updateActiveNav();
+  });
+}
+
+onMounted(() => {
+  updateActiveNav();
+  window.addEventListener("scroll", handleScroll, { passive: true });
+  window.addEventListener("resize", handleScroll, { passive: true });
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", handleScroll);
+  window.removeEventListener("resize", handleScroll);
+  if (scrollFrame) window.cancelAnimationFrame(scrollFrame);
+  if (pendingNavTimer) window.clearTimeout(pendingNavTimer);
+});
 const features = [
   {
     icon: Document,
@@ -59,14 +122,27 @@ const steps = [
           aria-label="主导航"
         >
           <RouterLink
-            class="active"
+            :class="{ active: activeNav === 'home' }"
             to="/"
+            @click="selectNav('home')"
           >
             首页
           </RouterLink>
-          <a href="#capabilities">平台能力</a>
-          <a href="#workflow">工作流程</a>
-          <a href="#scenarios">应用场景</a>
+          <a
+            href="#capabilities"
+            :class="{ active: activeNav === 'capabilities' }"
+            @click="selectNav('capabilities')"
+          >平台能力</a>
+          <a
+            href="#workflow"
+            :class="{ active: activeNav === 'workflow' }"
+            @click="selectNav('workflow')"
+          >工作流程</a>
+          <a
+            href="#scenarios"
+            :class="{ active: activeNav === 'scenarios' }"
+            @click="selectNav('scenarios')"
+          >应用场景</a>
         </nav>
         <div class="header-actions">
           <el-button
@@ -96,9 +172,9 @@ const steps = [
         aria-label="移动导航"
         @click="menuOpen = false"
       >
-        <a href="#capabilities">平台能力</a>
-        <a href="#workflow">工作流程</a>
-        <a href="#scenarios">应用场景</a>
+        <a href="#capabilities" :class="{ active: activeNav === 'capabilities' }" @click="selectNav('capabilities')">平台能力</a>
+        <a href="#workflow" :class="{ active: activeNav === 'workflow' }" @click="selectNav('workflow')">工作流程</a>
+        <a href="#scenarios" :class="{ active: activeNav === 'scenarios' }" @click="selectNav('scenarios')">应用场景</a>
       </nav>
     </header>
     <main id="main-content">
