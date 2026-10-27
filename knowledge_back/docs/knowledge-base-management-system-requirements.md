@@ -553,6 +553,8 @@ CREATE INDEX idx_chunks_embedding
 }
 ```
 
+保存接口会校验页面 ID 的 UUID 格式、重复项和页面是否存在，并在同一事务中覆盖角色原有授权和写入 `role.permissions.update` 审计日志。普通角色提交空数组即可清空页面权限；`super_admin` 必须保留全部启用页面权限。授权变更后，相关用户刷新或重新登录时获得新的页面列表。
+
 用户列表支持 `GET /users?q=关键词&status=active&page=1&page_size=20`。`q` 按显示名称 `display_name` 做不区分大小写的包含查询，`status` 支持 `active`、`disabled` 或空值；两个条件同时传入时取交集。每页支持 1–100 条，已删除用户不参与列表、详情与人数统计。
 
 新增用户请求字段为 `username`、`display_name`、`role_id`、`password`、`status`（默认 `active`）。编辑接口接受这些字段的部分更新；`password` 省略或为空时保留原密码。用户名必须唯一（包括已删除用户），密码为 12–1024 字符。修改用户名、角色、状态或密码会撤销现有会话。编辑响应为 `{ "user": { ... }, "reauthenticate": false }`；修改当前登录账号的用户名或密码时 `reauthenticate` 为 `true`。

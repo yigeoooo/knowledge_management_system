@@ -205,12 +205,119 @@ def role_pages(role_id):
     if db.session.get(Role, role_id) is None:
         raise ApiError("角色不存在", 404, 40401)
     ids = db.session.scalars(
-        db.select(RolePagePermission.page_id).where(
+        db.select(RolePagePermission.page_id)
+        .join(Page, Page.id == RolePagePermission.page_id)
+        .where(
             RolePagePermission.role_id == role_id,
             RolePagePermission.can_view.is_(True),
         )
+        .order_by(Page.sort_order, Page.id)
     ).all()
     return success({"page_ids": [str(value) for value in ids]})
+
+
+def _role_page_ids():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"page_ids"}:
+        raise ApiError("请求必须包含 page_ids 字段", 422)
+    page_ids = body["page_ids"]
+    if not isinstance(page_ids, list):
+        raise ApiError("page_ids 必须是数组", 422)
+
+    parsed = []
+    seen = set()
+    for value in page_ids:
+        if not isinstance(value, str):
+            raise ApiError("页面 ID 必须是 UUID 字符串", 422)
+        try:
+            page_id = UUID(value)
+        except (ValueError, AttributeError):
+            raise ApiError("页面 ID 格式不正确", 422) from None
+        if page_id in seen:
+            raise ApiError("page_ids 不能包含重复页面", 422)
+        seen.add(page_id)
+        parsed.append(page_id)
+
+    if parsed:
+        existing = set(
+            db.session.scalars(db.select(Page.id).where(Page.id.in_(parsed))).all()
+        )
+        missing = [str(page_id) for page_id in parsed if page_id not in existing]
+        if missing:
+            raise ApiError("页面不存在或已删除", 422)
+    return parsed
+
+
+@workspace.put("/roles/<uuid:role_id>/pages")
+@admin_only
+def update_role_pages(role_id):
+    role = db.session.scalar(
+        db.select(Role)
+        .where(Role.id == role_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if role is None:
+        raise ApiError("角色不存在", 404, 40401)
+    page_ids = _role_page_ids()
+
+    # Keep the built-in administrator usable even when a stale client submits an
+    # incomplete selection. Disabled pages may be retained, but every active
+    # page must remain available to this role.
+    if role.code == "super_admin":
+        active_page_ids = set(
+            db.session.scalars(db.select(Page.id).where(Page.status == "active")).all()
+        )
+        if not active_page_ids.issubset(page_ids):
+            raise ApiError("super_admin 必须保留全部启用页面权限", 403, 40301)
+
+    current_ids = set(
+        db.session.scalars(
+            db.select(RolePagePermission.page_id).where(
+                RolePagePermission.role_id == role.id,
+                RolePagePermission.can_view.is_(True),
+            )
+        ).all()
+    )
+    requested_ids = set(page_ids)
+    db.session.execute(
+        db.delete(RolePagePermission).where(RolePagePermission.role_id == role.id)
+    )
+    db.session.add_all(
+        [
+            RolePagePermission(role_id=role.id, page_id=page_id, can_view=True)
+            for page_id in page_ids
+        ]
+    )
+    db.session.add(
+        AuditLog(
+            user_id=g.user.id,
+            action="role.permissions.update",
+            resource_type="role",
+            resource_id=role.id,
+            ip_address=request.remote_addr,
+            detail={
+                "before_page_ids": sorted(str(page_id) for page_id in current_ids),
+                "after_page_ids": sorted(str(page_id) for page_id in requested_ids),
+            },
+        )
+    )
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise ApiError("页面权限保存失败，请刷新后重试", 409, 40901) from None
+
+    ids = db.session.scalars(
+        db.select(RolePagePermission.page_id)
+        .join(Page, Page.id == RolePagePermission.page_id)
+        .where(
+            RolePagePermission.role_id == role.id,
+            RolePagePermission.can_view.is_(True),
+        )
+        .order_by(Page.sort_order, Page.id)
+    ).all()
+    return success({"role_id": str(role.id), "page_ids": [str(value) for value in ids]})
 
 
 @workspace.get("/knowledge-bases")

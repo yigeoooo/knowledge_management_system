@@ -232,14 +232,21 @@ button { cursor: pointer; }
 .table-pagination { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-top: 22px; font-size: 11px; color: #969da8; }
 .permission-toolbar { display: flex; gap: 18px; align-items: center; font-size: 12px; padding-bottom: 24px; border-bottom: 1px solid #edf0f3; }
 .permission-toolbar .el-select { width: 210px; }
+.permission-toolbar-spacer { flex: 1; }
+.permission-note { padding: 13px 15px; margin-top: 18px; border-radius: 6px; background: #fff8eb; color: #a36d27; font-size: 11px; }
 .permission-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding-top: 24px; }
 .permission-item { display: flex; align-items: center; gap: 11px; padding: 18px 13px; border: 1px solid #ebeef2; border-radius: 7px; }
-.permission-item > .el-icon { color: #a8aeb8; }
+.permission-item > .el-checkbox { min-width: 0; flex: 1; height: auto; }
+.permission-item .el-checkbox__label { min-width: 0; padding-left: 9px; }
+.permission-item-content { display: block; min-width: 0; }
+.permission-item-content strong, .permission-item-content span, .permission-item-content small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.permission-item-content strong { font-size: 12px; font-weight: 500; }
+.permission-item-content span { font-size: 9px; margin-top: 8px; color: #9ca3ae; }
+.permission-item-content small { font-size: 9px; margin-top: 6px; color: #b6bbc3; }
+.permission-item-icon { color: #a8aeb8; flex: none; }
 .permission-item.granted { border-color: #f4dfc1; background: #fffdf9; }
-.permission-item.granted > .el-icon { color: #d6963c; }
-.permission-item strong { font-size: 12px; font-weight: 500; }
-.permission-item div span { display: block; font-size: 9px; margin-top: 8px; color: #9ca3ae; }
-.permission-item .el-tag { margin-left: auto; font-size: 9px; }
+.permission-item.granted .permission-item-icon { color: #d6963c; }
+.permission-item.disabled { opacity: .72; }
 .query-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 22px; }
 .query-card .el-card__body { padding: 0; }
 .query-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 20px 24px; border-bottom: 1px solid #f0f1f3; font-size: 11px; color: #89919c; }
