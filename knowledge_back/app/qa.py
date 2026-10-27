@@ -17,6 +17,7 @@ from .extensions import db, limiter
 from .grounding import NO_EVIDENCE, generate_answer, generate_suggestions
 from .http import ApiError, success
 from .models import DocumentChunk, QALog, now
+from .pdf_text import readable_answer
 from .qa_retrieval import retrieve_for_answer
 from .retrieval import (
     available_chunks,
@@ -241,7 +242,7 @@ def _log_response(log):
             "request_id": log.request_id,
             "knowledge_base_id": str(log.knowledge_base_id),
             "question": log.question,
-            "answer": log.answer,
+            "answer": readable_answer(log.answer, sources),
             "answer_status": {
                 "SUCCESS": "answered",
                 "PARTIAL": "partial",

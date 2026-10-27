@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import type { Component } from "vue";
+import { useRouter } from "vue-router";
 import {
   ArrowRight,
   Collection,
@@ -8,17 +10,44 @@ import {
   User,
   ChatDotRound,
   Lock,
+  Setting,
+  List,
+  DataAnalysis,
 } from "@element-plus/icons-vue";
 import { api, session } from "../lib/session";
+const router = useRouter();
 const data = ref<Record<string, number>>({}),
   error = ref(""),
   loading = ref(true);
-const metrics = [
+const availablePages = computed(() => session.pages.filter((page) =>
+  page.is_visible && !["button", "hidden"].includes(page.page_type) &&
+  router.hasRoute(`page:${page.code}`),
+));
+const canOpen = (path: string) => availablePages.value.some((page) => page.route_path === path);
+const metrics = computed(() => [
   { key: "knowledge_base_count", name: "知识库", icon: Collection, path: "/knowledge-bases" },
   { key: "document_count", name: "知识文档", icon: Document, path: "/documents" },
   { key: "robot_count", name: "接入机器人", icon: Cpu, path: "/robots" },
   { key: "user_count", name: "平台用户", icon: User, path: "/users" },
-];
+].filter((metric) => canOpen(metric.path)));
+const shortcutInfo: Record<string, { icon: Component; description: string }> = {
+  KnowledgeQA: { icon: ChatDotRound, description: "从知识库中查找答案" },
+  KnowledgeBaseManagement: { icon: Collection, description: "组织与浏览团队知识" },
+  DocumentManagement: { icon: Document, description: "文档与版本集中管理" },
+  RobotManagement: { icon: Cpu, description: "管理设备与调用状态" },
+  UserManagement: { icon: User, description: "管理平台成员" },
+  RoleManagement: { icon: Setting, description: "管理团队角色" },
+  PageManagement: { icon: List, description: "查看平台页面与路由" },
+  RolePermissions: { icon: Lock, description: "配置团队的访问范围" },
+  QALogs: { icon: DataAnalysis, description: "查看历史问答与引用资料" },
+  AuditLogs: { icon: Document, description: "查看平台操作记录" },
+  Profile: { icon: User, description: "查看个人信息与页面权限" },
+};
+const shortcuts = computed(() => availablePages.value
+  .filter((page) => page.route_path !== "/dashboard")
+  .sort((left, right) => left.sort_order - right.sort_order)
+  .map((page) => ({ ...page, ...shortcutInfo[page.component_key] })),
+);
 async function load() {
   loading.value = true;
   error.value = "";
@@ -54,6 +83,7 @@ onMounted(load);
       <h2>欢迎回来，{{ session.user?.display_name }}</h2>
       <p>让积累的每一份经验，都成为下一次创新的起点。</p>
       <el-button
+        v-if="canOpen('/qa')"
         type="primary"
         @click="$router.push('/qa')"
       >
@@ -83,6 +113,7 @@ onMounted(load);
     </el-button>
   </el-alert>
   <div
+    v-if="metrics.length"
     v-loading="loading"
     class="metric-grid"
   >
@@ -106,7 +137,7 @@ onMounted(load);
       </el-button>
     </el-card>
   </div>
-  <div class="dashboard-grid">
+  <div v-if="shortcuts.length" class="dashboard-grid">
     <el-card shadow="never">
       <template #header>
         <div class="card-title">
@@ -115,62 +146,14 @@ onMounted(load);
         </div>
       </template>
       <div class="quick-links">
-        <button @click="$router.push('/knowledge-bases')">
-          <el-icon><Collection /></el-icon>
+        <button v-for="page in shortcuts" :key="page.code" @click="$router.push(page.route_path)">
+          <el-icon><component :is="page.icon || Document" /></el-icon>
           <span>
-            知识库管理
-            <small>组织与浏览团队知识</small>
+            {{ page.name }}
+            <small>{{ page.description || "进入页面" }}</small>
           </span>
           <el-icon><ArrowRight /></el-icon>
         </button>
-        <button @click="$router.push('/documents')">
-          <el-icon><Document /></el-icon>
-          <span>
-            文档管理
-            <small>文档与版本集中管理</small>
-          </span>
-          <el-icon><ArrowRight /></el-icon>
-        </button>
-        <button @click="$router.push('/role-permissions')">
-          <el-icon><Lock /></el-icon>
-          <span>
-            角色页面权限
-            <small>查看团队的访问范围</small>
-          </span>
-          <el-icon><ArrowRight /></el-icon>
-        </button>
-      </div>
-    </el-card>
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-title">
-          平台建设进度
-          <span>GETTING STARTED</span>
-        </div>
-      </template>
-      <el-timeline>
-        <el-timeline-item
-          type="success"
-          timestamp="已就绪"
-        >
-          品牌首页、账号登录与角色权限
-        </el-timeline-item>
-        <el-timeline-item
-          type="success"
-          timestamp="已就绪"
-        >
-          知识库创建、文档上传与索引管理
-        </el-timeline-item>
-        <el-timeline-item
-          hollow
-          timestamp="下一阶段"
-        >
-          DeepSeek 问答与机器人接口
-        </el-timeline-item>
-      </el-timeline>
-      <div class="development-note">
-        <el-icon><ChatDotRound /></el-icon>
-        各功能将按页面逐步完善。
       </div>
     </el-card>
   </div>

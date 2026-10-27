@@ -10,6 +10,7 @@ from .embedding import EmbeddingError, embed_query
 from .extensions import db
 from .http import ApiError, success
 from .models import Document, DocumentChunk, DocumentVersion, KnowledgeBase
+from .pdf_text import readable_source
 from .storage import StorageError, presign_get
 
 retrieval = Blueprint("retrieval", __name__, url_prefix="/api/v1")
@@ -83,14 +84,14 @@ def source_from_row(chunk, version, document, score=None):
         "heading_path": chunk.heading_path,
         "content": None if modality != "text" else chunk.content,
     }
-    return source
+    return readable_source(source)
 
 
 def with_preview_urls(sources):
     """Generate fresh media links at response time; never persist signed URLs in logs."""
     result = []
     for original in sources:
-        source = dict(original)
+        source = readable_source(original)
         result.append(source)
         if source.get("modality") not in {"image", "video"}:
             continue

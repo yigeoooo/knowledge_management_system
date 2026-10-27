@@ -5,6 +5,7 @@ from uuid import UUID
 from flask import Blueprint, g, request
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload
 
 from .auth import authenticated
 from .extensions import db
@@ -20,6 +21,7 @@ from .models import (
     RolePagePermission,
     User,
 )
+from .pdf_text import readable_answer, readable_source
 from .storage import StorageError, ensure_bucket, knowledge_base_bucket
 
 workspace = Blueprint("workspace", __name__, url_prefix="/api/v1")
@@ -49,6 +51,11 @@ def serialized(row, fields):
         )
     if isinstance(row, User):
         result["role_name"] = row.role.name
+    if isinstance(row, AuditLog):
+        result["user_name"] = (
+            row.operator.display_name or row.operator.username
+            if row.operator else ("系统" if row.user_id is None else "未知用户")
+        )
     return result
 
 
@@ -181,6 +188,8 @@ def resource_list(resource):
     if page < 1 or not 1 <= size <= 100:
         raise ApiError("分页参数不正确", 422)
     query = db.select(model)
+    if model is AuditLog:
+        query = query.options(joinedload(AuditLog.operator))
     keyword = request.args.get("q", "").strip()[:200]
     if keyword:
         query = query.where(getattr(model, search_field).icontains(keyword, autoescape=True))
@@ -203,6 +212,7 @@ def _qa_log_data(log):
     knowledge_base = db.session.get(KnowledgeBase, log.knowledge_base_id)
     user = db.session.get(User, log.user_id) if log.user_id else None
     robot = db.session.get(Robot, log.robot_id) if log.robot_id else None
+    sources = [readable_source(source) for source in log.sources] if isinstance(log.sources, list) else []
     return {
         "id": str(log.id),
         "request_id": log.request_id,
@@ -215,8 +225,8 @@ def _qa_log_data(log):
         "knowledge_base_id": str(log.knowledge_base_id),
         "knowledge_base_name": knowledge_base.name if knowledge_base else None,
         "question": log.question,
-        "answer": log.answer,
-        "sources": log.sources if isinstance(log.sources, list) else [],
+        "answer": readable_answer(log.answer, sources),
+        "sources": sources,
         "retrieval_count": log.retrieval_count,
         "model_name": log.model_name,
         "status": log.status,
@@ -486,21 +496,30 @@ def archive_knowledge_base(knowledge_base_id):
 
 
 @workspace.get("/dashboard")
-@admin_only
+@authenticated
 def dashboard():
-    return success(
-        {
-            "knowledge_base_count": db.session.scalar(
-                db.select(db.func.count())
-                .select_from(KnowledgeBase)
-                .where(KnowledgeBase.status == "active")
-            ),
-            "user_count": db.session.scalar(
-                db.select(db.func.count()).select_from(User).where(User.status != "deleted")
-            ),
-            "role_count": db.session.scalar(db.select(db.func.count()).select_from(Role)),
-            "page_count": db.session.scalar(db.select(db.func.count()).select_from(Page)),
-            "document_count": db.session.scalar(db.select(db.func.count()).select_from(Document)),
-            "robot_count": db.session.scalar(db.select(db.func.count()).select_from(Robot)),
-        }
-    )
+    paths = set(db.session.scalars(
+        db.select(Page.route_path)
+        .join(RolePagePermission)
+        .where(
+            RolePagePermission.role_id == g.user.role_id,
+            RolePagePermission.can_view.is_(True),
+            Page.status == "active",
+            Page.page_type != "button",
+        )
+    ))
+    if "/dashboard" not in paths:
+        raise ApiError("没有访问此功能的权限", 403, 40301)
+    metrics = [
+        ("knowledge_base_count", "/knowledge-bases", KnowledgeBase,
+         [KnowledgeBase.status == "active"]),
+        ("user_count", "/users", User, [User.status != "deleted"]),
+        ("role_count", "/roles", Role, []),
+        ("page_count", "/pages", Page, []),
+        ("document_count", "/documents", Document, []),
+        ("robot_count", "/robots", Robot, []),
+    ]
+    return success({
+        key: db.session.scalar(db.select(db.func.count()).select_from(model).where(*filters))
+        for key, path, model, filters in metrics if path in paths
+    })

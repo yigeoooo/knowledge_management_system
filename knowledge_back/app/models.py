@@ -81,6 +81,7 @@ class KnowledgeBase(Record, db.Model):
 class AuditLog(Record, db.Model):
     __tablename__ = "audit_logs"
     user_id = db.Column(db.Uuid, db.ForeignKey("users.id"))
+    operator = db.relationship(User)
     action = db.Column(db.String(100), nullable=False)
     resource_type = db.Column(db.String(50), nullable=False)
     resource_id = db.Column(db.Uuid)

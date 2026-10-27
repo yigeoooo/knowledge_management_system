@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChatDotRound, Position, Document, ArrowRight, Refresh } from "@element-plus/icons-vue";
 import { api, ApiError } from "../lib/session";
-import { renderMarkdown } from "../lib/markdown";
+import MarkdownContent from "../components/MarkdownContent.vue";
+import SourceContent from "../components/SourceContent.vue";
 
 interface Source {
   chunk_id: string;
@@ -44,11 +45,7 @@ const searching = ref(false);
 const queryError = ref("");
 const answer = ref<Answer | null>(null);
 const submittedQuestion = ref("");
-const answerHtml = computed(() => renderMarkdown(answer.value?.answer || ""));
-const sources = computed(() => (answer.value?.sources || []).map((source) => ({
-  ...source,
-  html: source.modality === "text" ? renderMarkdown(source.content || "") : "",
-})));
+const sources = computed(() => answer.value?.sources || []);
 let suggestionsController: AbortController | null = null;
 let queryController: AbortController | null = null;
 let suggestionSequence = 0;
@@ -239,7 +236,7 @@ onBeforeUnmount(() => {
             <el-tag v-else-if="answer.answer_status === 'partial'" type="warning" size="small">部分内容有依据</el-tag>
             <el-tag v-else-if="answer.answer_status === 'sources_only'" type="info" size="small">可查看相关资料</el-tag>
           </div>
-          <div class="answer-body markdown-content" v-html="answerHtml"></div>
+          <MarkdownContent class="answer-body" :content="answer.answer" />
           <div v-if="sources.some((source) => source.source_id)" class="answer-citations">
             <a v-for="source in sources.filter((item) => item.source_id)" :key="source.chunk_id" :href="`#qa-source-${source.chunk_id}`">
               [{{ source.source_id }}] {{ source.document_title }}
@@ -267,7 +264,7 @@ onBeforeUnmount(() => {
           <div v-if="source.heading_path" class="source-meta">{{ source.heading_path }}</div>
           <video v-if="source.modality === 'video' && source.preview_url" class="source-video" controls :src="source.preview_url" preload="metadata" />
           <img v-else-if="source.modality === 'image' && source.preview_url" class="source-image" :src="source.preview_url" :alt="source.filename" loading="lazy" />
-          <div v-else-if="source.modality === 'text'" class="source-markdown markdown-content" v-html="source.html"></div>
+          <SourceContent v-else-if="source.modality === 'text'" class="source-markdown" :content="source.content || ''" :filename="source.filename" />
           <div v-else class="source-unavailable">媒体预览暂不可用，请稍后重新提问。</div>
           <div v-if="source.modality !== 'text'" class="source-meta">相关媒体，未用于推断具体内容</div>
         </article>
@@ -288,19 +285,6 @@ onBeforeUnmount(() => {
 .asked-question { padding: 16px; margin-bottom: 24px; background: #fff5e8; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answer-loading p { margin-top: 16px; color: #89919c; font-size: 13px; }
 .answer-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; color: #b07427; }
-.markdown-content { line-height: 1.85; color: #30343b; overflow-wrap: anywhere; }
-.markdown-content :deep(p) { margin: 0 0 14px; }
-.markdown-content :deep(ul), .markdown-content :deep(ol) { padding-left: 24px; margin: 0 0 14px; }
-.markdown-content :deep(li + li) { margin-top: 4px; }
-.markdown-content :deep(pre) { overflow-x: auto; border-radius: 6px; background: #0d1117; margin: 14px 0; }
-.markdown-content :deep(code) { font-family: ui-monospace, monospace; }
-.markdown-content :deep(:not(pre) > code) { padding: 2px 4px; border-radius: 3px; background: #f2f3f5; }
-.markdown-content :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 16px 0; }
-.markdown-content :deep(th), .markdown-content :deep(td) { border: 1px solid #e4e7ed; padding: 8px 12px; }
-.markdown-content :deep(th) { background: #fafbfc; }
-.markdown-content :deep(blockquote) { margin: 14px 0; padding: 4px 14px; border-left: 3px solid #efbf7b; color: #747b86; }
-.markdown-content :deep(hr) { margin: 18px 0; border: 0; border-top: 1px solid #ebeef2; }
-.markdown-content :deep(img) { max-width: 100%; }
 .answer-citations { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .answer-citations a { font-size: 12px; color: #a86e20; padding: 5px 9px; background: #fff5e8; border-radius: 4px; text-decoration: none; }
 .query-error { margin-bottom: 14px; }

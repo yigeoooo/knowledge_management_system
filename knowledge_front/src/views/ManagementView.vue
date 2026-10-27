@@ -6,6 +6,8 @@ import { FolderOpened, Plus, Refresh, Search } from "@element-plus/icons-vue";
 import { api } from "../lib/session";
 import { queryParams } from "../lib/query";
 import { resources } from "../lib/resources";
+import MarkdownContent from "../components/MarkdownContent.vue";
+import SourceContent from "../components/SourceContent.vue";
 
 interface QASource {
   source_id?: string;
@@ -233,8 +235,8 @@ watch(
           <div><span>提问人</span><strong>{{ detail.user_name || detail.robot_name || "—" }}</strong></div>
         </div>
         <section class="qa-detail-section"><h3>问题</h3><div class="qa-detail-text">{{ detail.question }}</div></section>
-        <section class="qa-detail-section"><h3>回答</h3><div v-if="detail.answer" class="qa-detail-text qa-answer">{{ detail.answer }}</div><el-empty v-else description="本次没有生成回答" :image-size="60" /><el-alert v-if="detail.error_message" class="qa-detail-error" :title="detail.error_message" type="error" :closable="false" /></section>
-        <section class="qa-detail-section"><h3>引用资料 <small>{{ detail.sources.length }} 条</small></h3><div v-if="detail.sources.length" class="qa-source-list"><article v-for="(source, index) in detail.sources" :key="source.source_id || index" class="qa-source-card"><div class="qa-source-heading"><strong>{{ source.source_id || index + 1 }}. {{ source.document_title || source.filename || "未命名资料" }}</strong><span>{{ sourceLabel(source) }}<template v-if="source.score != null"> · 匹配度 {{ source.score }}</template></span></div><div v-if="source.heading_path" class="qa-source-path">{{ source.heading_path }}</div><div v-if="source.content" class="qa-source-content">{{ source.content }}</div></article></div><el-empty v-else description="本次没有引用资料" :image-size="60" /></section>
+        <section class="qa-detail-section"><h3>回答</h3><MarkdownContent v-if="detail.answer" class="qa-detail-text qa-answer" :content="detail.answer" /><el-empty v-else description="本次没有生成回答" :image-size="60" /><el-alert v-if="detail.error_message" class="qa-detail-error" :title="detail.error_message" type="error" :closable="false" /></section>
+        <section class="qa-detail-section"><h3>引用资料 <small>{{ detail.sources.length }} 条</small></h3><div v-if="detail.sources.length" class="qa-source-list"><article v-for="(source, index) in detail.sources" :key="source.source_id || index" class="qa-source-card"><div class="qa-source-heading"><strong>{{ source.source_id || index + 1 }}. {{ source.document_title || source.filename || "未命名资料" }}</strong><span>{{ sourceLabel(source) }}<template v-if="source.score != null"> · 匹配度 {{ source.score }}</template></span></div><div v-if="source.heading_path" class="qa-source-path">{{ source.heading_path }}</div><SourceContent v-if="source.content" class="qa-source-content" :content="source.content" :filename="source.filename" /></article></div><el-empty v-else description="本次没有引用资料" :image-size="60" /></section>
       </template>
     </div>
     <template #footer><el-button @click="detailOpen = false">关闭</el-button></template>

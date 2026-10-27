@@ -10,6 +10,7 @@ from .embedding import EmbeddingError, embed_contents, embed_texts
 from .extensions import db
 from .markdown import chunk_markdown
 from .models import Document, DocumentChunk, DocumentVersion, IndexTask, now
+from .pdf_text import normalize_pdf_text
 from .storage import StorageError, delete_object, presign_get, read_object
 
 TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
@@ -67,7 +68,8 @@ def _extract_text(filename: str, content: bytes) -> str | None:
             from pypdf import PdfReader
 
             reader = PdfReader(__import__("io").BytesIO(content))
-            return "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
+            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            return normalize_pdf_text(text).strip()
         except Exception as error:
             raise RuntimeError("PDF 文本提取失败，请确认文件没有加密") from error
     if extension == ".docx":

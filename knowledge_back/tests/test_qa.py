@@ -134,6 +134,37 @@ def grounded_answer(_instruction, material, **_options):
     }, "test-chat"
 
 
+def test_existing_pdf_chunks_and_replayed_answers_are_readable(app, client, qa_setup):
+    raw_text = '检查电源\x01接⼝后，启动设备。电源指示灯亮起表示设备已经完成初始化。'
+    clean_text = '检查电源 接口后，启动设备。电源指示灯亮起表示设备已经完成初始化。'
+    with app.app_context():
+        for chunk_id in qa_setup['chunks']:
+            chunk = db.session.get(DocumentChunk, UUID(chunk_id))
+            chunk.content = raw_text
+            version = db.session.get(DocumentVersion, chunk.document_version_id)
+            version.filename = 'guide.pdf'
+        db.session.commit()
+    qa_setup['completion'].side_effect = grounded_answer
+    response = ask(client, qa_setup)
+    assert response.status_code == 200
+    data = response.get_json()['data']
+    assert data['sources'][0]['content'] == clean_text
+    for call in qa_setup['completion'].call_args_list:
+        material = call.args[1]
+        for item in material.get('sources', []):
+            assert all('\x01' not in passage['text'] for passage in item.get('passages', []))
+    with app.app_context():
+        log = db.session.scalar(db.select(QALog).where(QALog.request_id == 'qa-request-1'))
+        log.sources = [{**source, 'content': raw_text} for source in log.sources]
+        log.answer = '**电源接⼝**\x01已就绪'
+        db.session.commit()
+    calls = qa_setup['completion'].call_count
+    replay = ask(client, qa_setup).get_json()['data']
+    assert replay['sources'][0]['content'] == clean_text
+    assert replay['answer'] == '**电源接口** 已就绪'
+    assert qa_setup['completion'].call_count == calls
+
+
 def test_suggestions_use_only_current_indexed_text_in_selected_base(app, client, qa_setup):
     with app.app_context():
         base_id = UUID(qa_setup["base_id"])

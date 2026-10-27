@@ -61,3 +61,28 @@ def test_qa_log_detail_requires_admin_and_returns_not_found(client):
     headers = admin_headers(client)
     response = client.get(f"/api/v1/qa-logs/{uuid4()}", headers=headers)
     assert response.status_code == 404
+
+
+def test_historical_pdf_log_is_readable_without_rewriting_saved_evidence(app, client):
+    from uuid import UUID
+
+    raw_text = '接⼝\x01说明\n\n运行\x01demo --port 80'
+    with app.app_context():
+        base = db.session.scalar(db.select(KnowledgeBase))
+        log = QALog(
+            request_id='legacy-pdf', source_type='WEB', knowledge_base_id=base.id,
+            question='如何使用接口？', answer='**接⼝**\x01说明', status='SUCCESS',
+            sources=[{'filename': 'guide.PDF', 'modality': 'text', 'content': raw_text,
+                      'heading_path': '接⼝\x01说明'}],
+        )
+        db.session.add(log)
+        db.session.commit()
+        log_id = str(log.id)
+    response = client.get(f'/api/v1/qa-logs/{log_id}', headers=admin_headers(client))
+    assert response.status_code == 200
+    data = response.get_json()['data']
+    assert data['sources'][0]['content'] == '接口 说明\n\n运行 demo --port 80'
+    assert data['sources'][0]['heading_path'] == '接口 说明'
+    assert data['answer'] == '**接口** 说明'
+    with app.app_context():
+        assert db.session.get(QALog, UUID(log_id)).sources[0]['content'] == raw_text
