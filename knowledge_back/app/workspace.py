@@ -199,6 +199,43 @@ def resource_list(resource):
     )
 
 
+def _qa_log_data(log):
+    knowledge_base = db.session.get(KnowledgeBase, log.knowledge_base_id)
+    user = db.session.get(User, log.user_id) if log.user_id else None
+    robot = db.session.get(Robot, log.robot_id) if log.robot_id else None
+    return {
+        "id": str(log.id),
+        "request_id": log.request_id,
+        "source_type": log.source_type,
+        "user_id": str(log.user_id) if log.user_id else None,
+        "user_name": user.display_name if user else None,
+        "robot_id": str(log.robot_id) if log.robot_id else None,
+        "robot_name": robot.name if robot else None,
+        "robot_serial_no": robot.serial_no if robot else None,
+        "knowledge_base_id": str(log.knowledge_base_id),
+        "knowledge_base_name": knowledge_base.name if knowledge_base else None,
+        "question": log.question,
+        "answer": log.answer,
+        "sources": log.sources if isinstance(log.sources, list) else [],
+        "retrieval_count": log.retrieval_count,
+        "model_name": log.model_name,
+        "status": log.status,
+        "error_message": log.error_message,
+        "latency_ms": log.latency_ms,
+        "created_at": log.created_at.isoformat(),
+        "updated_at": log.updated_at.isoformat(),
+    }
+
+
+@workspace.get("/qa-logs/<uuid:log_id>")
+@admin_only
+def qa_log_detail(log_id):
+    log = db.session.get(QALog, log_id)
+    if log is None:
+        raise ApiError("问答日志不存在", 404, 40401)
+    return success(_qa_log_data(log))
+
+
 @workspace.get("/roles/<uuid:role_id>/pages")
 @admin_only
 def role_pages(role_id):

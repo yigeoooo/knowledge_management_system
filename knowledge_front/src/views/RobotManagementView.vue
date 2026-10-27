@@ -275,7 +275,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
     <template #footer><el-button @click="editorOpen = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="editorLoading" @click="saveRobot">保存</el-button></template>
   </el-dialog>
 
-  <el-drawer v-model="detailOpen" title="机器人详情" size="460px" destroy-on-close>
+  <el-dialog v-model="detailOpen" title="机器人详情" width="560px" align-center destroy-on-close class="robot-detail-dialog">
     <el-alert v-if="detailError" :title="detailError" type="error" :closable="false" show-icon />
     <div v-loading="detailLoading" class="robot-detail" v-if="detail">
       <div class="robot-detail-icon"><el-avatar :size="64"><el-icon><Cpu /></el-icon></el-avatar><div><h2>{{ detail.name || "未命名机器人" }}</h2><el-tag :type="statusType(detail.status)">{{ statusLabel(detail.status) }}</el-tag></div></div>
@@ -287,7 +287,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
         <el-descriptions-item label="更新时间">{{ formatTime(detail.updated_at) }}</el-descriptions-item>
       </el-descriptions>
     </div>
-  </el-drawer>
+    <template #footer><el-button @click="detailOpen = false">关闭</el-button></template>
+  </el-dialog>
 </template>
 
 <style scoped>

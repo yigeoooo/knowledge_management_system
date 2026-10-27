@@ -760,11 +760,13 @@ onBeforeUnmount(() => {
     </template>
   </el-dialog>
 
-  <el-drawer
+  <el-dialog
     v-model="detailsOpen"
     title="用户详情"
-    size="480px"
-    class="user-detail-drawer"
+    width="560px"
+    align-center
+    destroy-on-close
+    class="user-detail-dialog"
   >
     <div
       v-loading="detailsLoading"
@@ -816,7 +818,7 @@ onBeforeUnmount(() => {
         编辑用户
       </el-button>
     </template>
-  </el-drawer>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -924,8 +926,8 @@ onBeforeUnmount(() => {
 .user-details .profile-heading h2 {
   overflow-wrap: anywhere;
 }
-:global(.user-detail-drawer) {
-  max-width: 100vw;
+:global(.user-detail-dialog) {
+  max-width: calc(100vw - 32px);
 }
 @media (max-width: 640px) {
   .users-filters {

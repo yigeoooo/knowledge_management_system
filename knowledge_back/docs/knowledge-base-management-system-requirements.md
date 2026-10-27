@@ -541,6 +541,7 @@ CREATE INDEX idx_chunks_embedding
 | DELETE | `/roles/{id}` | 超级管理员 | 删除角色；`super_admin` 或仍被用户使用的角色不能删除 |
 | GET | `/roles/{id}/pages` | 超级管理员 | 查询角色页面 |
 | PUT | `/roles/{id}/pages` | 超级管理员 | 覆盖角色页面权限 |
+| GET | `/qa-logs/{id}` | 超级管理员 | 查询单条问答日志详情，包括问题、回答和引用来源 |
 | GET | `/pages` | 超级管理员 | 页面路由列表 |
 | POST | `/pages` | 超级管理员 | 新增页面路由 |
 | PUT | `/pages/{id}` | 超级管理员 | 修改页面路由 |
