@@ -10,6 +10,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
+from .answer_text import answer_text
 from .auth import page_required
 from .chat import ChatError
 from .embedding import EmbeddingError
@@ -247,6 +248,12 @@ def _finish_request(log_id, lease, **values):
 def _log_response(log):
     sources = log.sources or []
     _verify_current(log.knowledge_base_id, sources)
+    if log.source_type == "ROBOT":
+        if log.status in {"NO_EVIDENCE", "SOURCES_ONLY"}:
+            answer = "当前知识库资料不足以给出可靠回答，请补充具体问题或相关资料。"
+        else:
+            answer = answer_text(readable_answer(log.answer, sources), sources)
+        return success({"answer": answer})
     return success(
         {
             "request_id": log.request_id,
@@ -330,7 +337,8 @@ def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=No
         if not context and media:
             answer = "找到了相关图片或视频，但目前没有足够的文字资料生成可靠回答，请查看相关来源。"
         if (
-            status in {"SUCCESS", "PARTIAL"}
+            robot_id is None
+            and status in {"SUCCESS", "PARTIAL"}
             and material.scope.get("coverage") == "sampled_sections"
         ):
             covered = material.scope["covered_documents"]

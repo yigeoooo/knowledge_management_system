@@ -16,6 +16,7 @@ dependencies = [
   "minio>=7.2,<8",
   "pypdf>=5,<7",
   "python-docx>=1.1,<2",
+  "markdown-it-py>=4,<5",
 ]
 
 [dependency-groups]

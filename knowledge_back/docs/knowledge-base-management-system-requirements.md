@@ -202,7 +202,7 @@ knowledge_base 状态为 active
 5. 检查知识库存在且状态为 `active`。
 6. 使用知识库内部 UUID 作为向量查询过滤条件。
 7. 检索、重排、调用大语言模型并生成答案。
-8. 返回答案和来源。
+8. 返回统一 JSON 包装，`data` 仅含纯文字答案 `answer`。
 9. 写入 `qa_logs`，其中 `source_type = ROBOT`、`robot_id` 为机器人 ID、`user_id` 为空；更新机器人的 `last_request_at`。
 
 机器人请求不使用网页用户的登录 Token。
@@ -669,7 +669,18 @@ PDF 文本在索引、检索来源序列化及历史问答展示时统一清理�
 
 完整路径为 `POST /api/v1/robot/query`，请求头为 `Content-Type: application/json`，不需要 `Authorization`。四个字段均必填：`serial_no`、`knowledge_base_code` 为 1–100 个字符，`question` 为 1–2000 个字符，`request_id` 为 1–100 位字母、数字或 `._-`。当前与网页问答共用检索、生成和审阅逻辑，单轮非流式，不接受 `top_k`、`stream`、历史消息或网页推荐凭据。
 
-成功响应与 `/web/query` 一致，`data` 包含 `request_id`、知识库 UUID、问题、`answer`、`answer_status`、`sources`、`model`、`latency_ms`。响应中的 `sources` 包含文档 ID、文件名、版本、标题路径和相关片段；Word 引用同样保留格式。日志关联机器人，历史详情可查看机器人名称和序列号。
+成功响应仍为 `application/json`，保留 `code`、`message`、`request_id`、`data` 包装，`data` 仅包含 `answer`。`answer` 为回答正文，移除引用编号和 Markdown 排版标记，保留有意义的代码和数字。机器人响应不返回来源、预览链接、模型、耗时、问题回显等字段；资料不足时返回文字说明，不提示用户查看未返回的引用资料。历史请求重试也采用相同结构。问答日志关联机器人并保留内部依据，历史详情可查看机器人名称和序列号。
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "request_id": "服务端请求追踪编号",
+  "data": { "answer": "安装前请检查电源和接地。" }
+}
+```
+
+错误响应继续使用统一 JSON 错误结构，`data` 为 null。
 
 未注册或停用机器人返回 HTTP 403 / `43001`；知识库不存在或停用返回 HTTP 404 / `43002`。拒绝请求不会进入检索或模型调用。相同机器人、知识库、问题和请求编号重试复用已完成结果；不同机器人、网页用户或不同问题占用同一编号时返回 `40901`，处理中返回 `40902`，引用已失效返回 `40903`。重试时仍重新验证机器人是否启用。每 IP 每分钟最多 60 次，每台已注册机器人每分钟最多 20 次，超出返回 HTTP 429。接口复用现有表，无需数据库迁移。
 
