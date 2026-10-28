@@ -154,3 +154,6 @@ Root 和当前登录账号的状态、角色、删除操作由前后端共同保
 DOCX 详情和 Word 引用共享 `WordContent.vue` 的清理和格式样式。`content_html` 仅用于显示；答案、检索和日志原始引用文本继续使用 content。后端以引用 version_id 从对象存储恢复格式，历史日志不会被最新文档替换。
 
 验证：后端 `tests/test_word_editing.py`、`tests/test_word_citations.py`；浏览器 `tests/word-editing.spec.ts` 会启动隔离 Flask/SQLite 服务，使用真实 DOCX 导入导出、保存、索引和下载接口，存储及 Embedding 使用测试替身。`tests/dashboard-and-log-rendering.spec.ts` 检查两个引用页面的格式和 HTML 清理。后端虚拟环境需先安装开发依赖，测试服务不连接业务数据库和 MinIO。
+
+
+文档列表返回 `max_file_size`（字节），默认 209715200；文件选择和替换版本入口用此值校验，并显示上限。知识库/文档列表及详情返回 `created_by_name`、`updated_by_name`，列表两列显示用户显示名称，缺失时显示 `—`。

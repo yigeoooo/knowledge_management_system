@@ -15,6 +15,8 @@ interface KnowledgeBase {
   description: string | null
   status: KnowledgeBaseStatus
   created_by: string | null
+  created_by_name: string
+  updated_by_name: string
   created_at: string
   updated_at: string
 }
@@ -160,6 +162,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest })
       <el-table-column label="知识库" min-width="220"><template #default="{ row }"><div class="base-cell"><el-avatar :size="34"><el-icon><Collection /></el-icon></el-avatar><div><strong>{{ row.name }}</strong><span>{{ row.code }}</span></div></div></template></el-table-column>
       <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
       <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+      <el-table-column label="创建人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.created_by_name || '—' }}</template></el-table-column>
+      <el-table-column label="最后修改人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.updated_by_name || '—' }}</template></el-table-column>
       <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
       <el-table-column label="操作" fixed="right" width="300"><template #default="{ row }"><el-button v-if="row.status === 'active' && canManageDocuments" link type="primary" @click="openDocuments(row)">管理文档</el-button><el-button link type="primary" :icon="Edit" :disabled="!!actionId" @click="openEditor(row)">编辑</el-button><el-button v-if="row.status !== 'archived'" link type="danger" :icon="Delete" :disabled="!!actionId" @click="archive(row)">归档</el-button></template></el-table-column>
       <template #empty><el-empty :description="filters.q || filters.status ? '没有找到匹配的知识库' : '暂无知识库，请先创建一个'" :image-size="80" /></template>

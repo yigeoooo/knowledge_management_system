@@ -15,6 +15,7 @@ from .document_authoring import document_bytes
 from .extensions import db
 from .http import ApiError, status_filter, success
 from .models import AuditLog, Document, DocumentVersion, IndexTask, KnowledgeBase
+from .resource_operators import operator_names
 from .storage import (
     StorageError,
     delete_object,
@@ -125,8 +126,9 @@ def _description(value):
     return value.strip() or None
 
 
-def _document_data(document, *, include_versions=False):
+def _document_data(document, *, include_versions=False, operators=None):
     result = {
+        **(operators if operators is not None else operator_names([document], "document")[document.id]),
         "id": str(document.id),
         "knowledge_base_id": str(document.knowledge_base_id),
         "title": document.title,
@@ -318,6 +320,7 @@ def list_documents(knowledge_base_id):
         error_out=False,
     )
     items = []
+    names = operator_names(result.items, "document")
     for document in result.items:
         current = db.session.get(DocumentVersion, document.current_version_id) if document.current_version_id else None
         # A newly uploaded version is intentionally not current until indexing
@@ -330,7 +333,7 @@ def list_documents(knowledge_base_id):
                 .where(DocumentVersion.document_id == document.id)
                 .order_by(DocumentVersion.version_no.desc(), DocumentVersion.created_at.desc())
             )
-        item = _document_data(document)
+        item = _document_data(document, operators=names[document.id])
         item["current_version"] = _version_data(current) if current else None
         items.append(item)
     return success({"items": items, "total": result.total, "page": page, "page_size": page_size,

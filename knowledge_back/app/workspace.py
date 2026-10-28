@@ -27,6 +27,7 @@ from .models import (
     User,
 )
 from .pdf_text import readable_answer
+from .resource_operators import operator_names
 from .storage import StorageError, ensure_bucket, knowledge_base_bucket
 
 workspace = Blueprint("workspace", __name__, url_prefix="/api/v1")
@@ -80,8 +81,9 @@ KNOWLEDGE_BASE_STATUSES = {"active", "disabled", "archived"}
 KNOWLEDGE_BASE_FIELDS = {"code", "name", "description", "status"}
 
 
-def _knowledge_base_data(base):
+def _knowledge_base_data(base, operators=None):
     return {
+        **(operators if operators is not None else operator_names([base], "knowledge_base")[base.id]),
         "id": str(base.id),
         "code": base.code,
         "name": base.name,
@@ -196,9 +198,10 @@ def resource_list(resource):
         query = query.where(model.status == status)
     order = model.sort_order if model is Page else model.created_at.desc()
     pagination = db.paginate(query.order_by(order), page=page, per_page=size, error_out=False)
+    names = operator_names(pagination.items, "document") if resource == "documents" else {}
     return success(
         {
-            "items": [serialized(row, fields) for row in pagination.items],
+            "items": [{**serialized(row, fields), **names.get(row.id, {})} for row in pagination.items],
             "total": pagination.total,
             "page": page,
             "page_size": size,
@@ -383,7 +386,8 @@ def knowledge_bases():
             .where(KnowledgeBase.status == "active")
             .order_by(KnowledgeBase.created_at, KnowledgeBase.id)
         ).all()
-        return success({"items": [_knowledge_base_data(base) for base in bases]})
+        names = operator_names(bases, "knowledge_base")
+        return success({"items": [_knowledge_base_data(base, names[base.id]) for base in bases]})
 
     try:
         page = int(request.args.get("page", "1"))
@@ -414,9 +418,10 @@ def knowledge_bases():
         per_page=page_size,
         error_out=False,
     )
+    names = operator_names(result.items, "knowledge_base")
     return success(
         {
-            "items": [_knowledge_base_data(base) for base in result.items],
+            "items": [_knowledge_base_data(base, names[base.id]) for base in result.items],
             "total": result.total,
             "page": page,
             "page_size": page_size,

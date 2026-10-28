@@ -331,3 +331,10 @@ uv run flask --app app db upgrade
 - [数据库初始化 SQL](init.sql)
 
 后端 `.env.local`、本地运行数据、第三方服务密钥和 MinIO 许可证均由 `.gitignore` 排除，不要提交到仓库。
+
+
+### 上传大小与操作人显示
+
+单文件默认上限为 **200 MB（209715200 字节）**。在 `knowledge_back/.env.local` 中添加或修改 `MAX_DOCUMENT_SIZE=209715200`，重启后端后生效；服务器通过部署环境中的同名变量配置。该变量同时控制上传信息校验、Flask 回退上传请求体、存储读取上限，文档列表返回 `max_file_size` 供前端校验及显示。模板位于 `knowledge_back/.env.example` 和 `.env.server.example`，代码默认值位于 `knowledge_back/app/config.py`。如果部署使用 Nginx，站点的 `client_max_body_size` 也应至少为 `200m`。
+
+知识库管理和文档管理的列表展示“创建人”“最后修改人”，使用用户显示名称。创建人来自资源创建记录；最后修改人来自最近一次成功的创建、上传完成、在线编辑、属性修改或归档审计记录。下载、上传准备和重索引不计为内容修改。无用户记录时显示 `—`，不展示 ID；用户改名后列表同步使用新的显示名称。无需新增数据库字段或执行迁移。

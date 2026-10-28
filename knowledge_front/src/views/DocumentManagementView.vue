@@ -40,6 +40,8 @@ interface Version {
   task: Task | null;
 }
 interface DocumentRow {
+  created_by_name: string;
+  updated_by_name: string;
   id: string;
   knowledge_base_id: string;
   title: string;
@@ -755,6 +757,8 @@ onBeforeUnmount(stopIndexPolling);
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="创建人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.created_by_name || '—' }}</template></el-table-column>
+      <el-table-column label="最后修改人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.updated_by_name || '—' }}</template></el-table-column>
       <el-table-column
         label="更新时间"
         width="180"
@@ -952,7 +956,7 @@ onBeforeUnmount(stopIndexPolling);
         <div>
           <h2>{{ detail.title }}</h2>
           <p>
-            {{ detail.knowledge_base_id }} · {{ detail.status === "active" ? "有效" : "已归档" }}
+            {{ detail.status === "active" ? "有效" : "已归档" }} · 创建人：{{ detail.created_by_name || '—' }} · 最后修改人：{{ detail.updated_by_name || '—' }}
           </p>
         </div>
         <div class="document-actions">

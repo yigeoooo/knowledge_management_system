@@ -119,7 +119,10 @@ def with_preview_urls(sources):
                 pass
         if source.get("modality") not in {"image", "video"}:
             continue
-        version = db.session.get(DocumentVersion, UUID(source["version_id"]))
+        try:
+            version = db.session.get(DocumentVersion, UUID(str(source.get("version_id"))))
+        except (ValueError, TypeError):
+            version = None
         if version is None:
             source["preview_url"] = None
             continue
