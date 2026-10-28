@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from flask import Blueprint, g, request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -33,6 +33,15 @@ from .storage import StorageError, ensure_bucket, knowledge_base_bucket
 workspace = Blueprint("workspace", __name__, url_prefix="/api/v1")
 
 
+def _qa_requester_name(log):
+    source = (log.source_type or "").upper()
+    if source == "WEB":
+        return log.user.display_name if log.user and log.user.display_name else "未知用户"
+    if source == "ROBOT":
+        return (log.robot.name or log.robot.serial_no) if log.robot else "未知机器人"
+    return "—"
+
+
 def serialized(row, fields):
     result = {}
     for field in fields:
@@ -46,6 +55,8 @@ def serialized(row, fields):
         )
     if isinstance(row, User):
         result["role_name"] = row.role.name
+    if isinstance(row, QALog):
+        result["requester_name"] = _qa_requester_name(row)
     if isinstance(row, AuditLog):
         result["user_name"] = (
             row.operator.display_name or row.operator.username
@@ -190,6 +201,13 @@ def resource_list(resource):
     query = db.select(model)
     if model is AuditLog:
         query = query.options(joinedload(AuditLog.operator))
+    elif model is QALog:
+        query = query.options(joinedload(QALog.user), joinedload(QALog.robot))
+        source_type = request.args.get("source_type", "").strip().upper()
+        if source_type not in {"", "WEB", "ROBOT"}:
+            raise ApiError("问题来源只能为 WEB 或 ROBOT", 422)
+        if source_type:
+            query = query.where(func.upper(QALog.source_type) == source_type)
     keyword = request.args.get("q", "").strip()[:200]
     if keyword:
         query = query.where(getattr(model, search_field).icontains(keyword, autoescape=True))
@@ -212,13 +230,14 @@ def resource_list(resource):
 def _qa_log_data(log):
     from .retrieval import with_preview_urls
     knowledge_base = db.session.get(KnowledgeBase, log.knowledge_base_id)
-    user = db.session.get(User, log.user_id) if log.user_id else None
-    robot = db.session.get(Robot, log.robot_id) if log.robot_id else None
+    user = log.user
+    robot = log.robot
     sources = with_preview_urls(log.sources) if isinstance(log.sources, list) else []
     return {
         "id": str(log.id),
         "request_id": log.request_id,
         "source_type": log.source_type,
+        "requester_name": _qa_requester_name(log),
         "user_id": str(log.user_id) if log.user_id else None,
         "user_name": user.display_name if user else None,
         "robot_id": str(log.robot_id) if log.robot_id else None,

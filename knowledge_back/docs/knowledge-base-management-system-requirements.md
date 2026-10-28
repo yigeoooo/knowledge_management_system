@@ -544,7 +544,8 @@ CREATE INDEX idx_chunks_embedding
 | DELETE | `/roles/{id}` | 角色管理页面权限 | 删除角色；`super_admin` 或仍被用户使用的角色不能删除 |
 | GET | `/roles/{id}/pages` | 角色页面权限配置权限 | 查询角色页面 |
 | PUT | `/roles/{id}/pages` | 角色页面权限配置权限 | 覆盖角色页面权限 |
-| GET | `/qa-logs/{id}` | 问答日志页面权限 | 查询单条问答日志详情，包括问题、回答和引用来源 |
+| GET | `/qa-logs` | 问答日志页面权限 | 分页查询问答日志，支持问题关键词 `q`、来源 `source_type=WEB/ROBOT` 筛选，返回提问人 `requester_name` |
+| GET | `/qa-logs/{id}` | 问答日志页面权限 | 查询单条问答日志详情，包括问题、回答、提问人和引用来源 |
 | GET | `/audit-logs` | 审计日志页面权限 | 分页查询审计日志，返回操作人的 `user_name`（显示名称，缺失时回退用户名；系统操作为“系统”） |
 | GET | `/pages` | 页面路由权限或角色页面权限配置权限 | 页面路由列表 |
 | POST | `/pages` | 页面路由权限 | 规划接口，尚未实现；当前通过 SQL 注册页面 |

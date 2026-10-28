@@ -25,6 +25,7 @@ interface QALogDetail {
   id: string;
   request_id: string;
   source_type: string;
+  requester_name: string;
   user_id: string | null;
   user_name: string | null;
   robot_id: string | null;
@@ -51,6 +52,7 @@ const total = ref(0);
 const page = ref(1);
 const query = ref("");
 const status = ref("");
+const sourceType = ref("");
 const loading = ref(false);
 const error = ref("");
 let generation = 0;
@@ -72,6 +74,7 @@ async function load() {
       page_size: "20",
       q: query.value,
       status: status.value,
+      source_type: config.value.sourceFilter ? sourceType.value : "",
     });
     const result = await api<{ items: Record<string, unknown>[]; total?: number }>(
       `${path}?${params}`,
@@ -101,6 +104,10 @@ function search() {
 
 function format(value: unknown, prop: string) {
   if (typeof value === "boolean") return value ? "是" : "否";
+  if (prop === "source_type") {
+    const source = String(value || "").toUpperCase();
+    return source === "WEB" ? "网页（WEB）" : source === "ROBOT" ? "机器人（ROBOT）" : value || "—";
+  }
   if (typeof value === "string" && prop.endsWith("_at")) {
     return new Date(value).toLocaleString("zh-CN", { hour12: false });
   }
@@ -170,6 +177,7 @@ watch(
   () => {
     query.value = "";
     status.value = "";
+    sourceType.value = "";
     page.value = 1;
     rows.value = [];
     closeDetail();
@@ -199,6 +207,11 @@ watch(
         <el-option label="启用" value="active" />
         <el-option label="停用" value="disabled" />
       </el-select>
+      <el-select v-if="config.sourceFilter" v-model="sourceType" class="qa-source-filter" aria-label="问题来源" placeholder="全部来源" clearable value-on-clear="" @change="search">
+        <el-option label="全部来源" value="" />
+        <el-option label="网页（WEB）" value="WEB" />
+        <el-option label="机器人（ROBOT）" value="ROBOT" />
+      </el-select>
       <el-button type="primary" plain @click="search">搜索</el-button>
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
     </div>
@@ -214,7 +227,7 @@ watch(
         <template #default="{ row }"><el-button type="primary" link @click.stop="openDetail(row)">查看详情</el-button></template>
       </el-table-column>
       <template #empty>
-        <el-empty :description="error ? '暂时无法加载数据，请点击刷新重试' : query || status ? '没有找到匹配的记录' : '暂无记录，期待第一份内容'" :image-size="80">
+        <el-empty :description="error ? '暂时无法加载数据，请点击刷新重试' : query || status || sourceType ? '没有找到匹配的记录' : '暂无记录，期待第一份内容'" :image-size="80">
           <template #image><el-icon :size="70" color="#c6c8ce"><FolderOpened /></el-icon></template>
         </el-empty>
       </template>
@@ -226,14 +239,14 @@ watch(
     <div v-loading="detailLoading" class="qa-detail-body">
       <el-alert v-if="detailError" :title="detailError" type="error" show-icon :closable="false" />
       <template v-if="detail">
-        <div class="qa-detail-summary"><el-tag :type="statusType(detail.status)" effect="light">{{ statusText(detail.status) }}</el-tag><span>{{ detail.source_type === "ROBOT" ? "机器人提问" : "网页提问" }}</span><span>{{ format(detail.created_at, "created_at") }}</span></div>
+        <div class="qa-detail-summary"><el-tag :type="statusType(detail.status)" effect="light">{{ statusText(detail.status) }}</el-tag><span>{{ format(detail.source_type, "source_type") }}</span><span>{{ format(detail.created_at, "created_at") }}</span></div>
         <div class="qa-detail-meta">
           <div><span>请求编号</span><strong>{{ detail.request_id }}</strong></div>
           <div><span>知识库</span><strong>{{ detail.knowledge_base_name || detail.knowledge_base_id }}</strong></div>
           <div><span>耗时</span><strong>{{ detail.latency_ms == null ? "—" : `${detail.latency_ms} ms` }}</strong></div>
           <div><span>召回切片</span><strong>{{ detail.retrieval_count ?? "—" }}</strong></div>
           <div><span>回答模型</span><strong>{{ detail.model_name || "—" }}</strong></div>
-          <div><span>提问人</span><strong>{{ detail.user_name || detail.robot_name || "—" }}</strong></div>
+          <div><span>提问人</span><strong>{{ detail.requester_name || "—" }}</strong></div>
         </div>
         <section class="qa-detail-section"><h3>问题</h3><div class="qa-detail-text">{{ detail.question }}</div></section>
         <section class="qa-detail-section"><h3>回答</h3><MarkdownContent v-if="detail.answer" class="qa-detail-text qa-answer" :content="detail.answer" /><el-empty v-else description="本次没有生成回答" :image-size="60" /><el-alert v-if="detail.error_message" class="qa-detail-error" :title="detail.error_message" type="error" :closable="false" /></section>
@@ -243,3 +256,7 @@ watch(
     <template #footer><el-button @click="detailOpen = false">关闭</el-button></template>
   </el-dialog>
 </template>
+
+<style scoped>
+.table-toolbar > .qa-source-filter { width: 180px; }
+</style>

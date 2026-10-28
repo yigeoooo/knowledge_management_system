@@ -160,6 +160,8 @@ class QALog(Record, db.Model):
     source_type = db.Column(db.String(20), nullable=False)
     user_id = db.Column(db.Uuid, db.ForeignKey("users.id"))
     robot_id = db.Column(db.Uuid, db.ForeignKey("robots.id"))
+    user = db.relationship(User)
+    robot = db.relationship(Robot)
     knowledge_base_id = db.Column(db.Uuid, db.ForeignKey("knowledge_bases.id"), nullable=False)
     question = db.Column(db.Text, nullable=False)
     answer = db.Column(db.Text)
