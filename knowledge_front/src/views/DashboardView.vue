@@ -34,6 +34,7 @@ const shortcutInfo: Record<string, { icon: Component; description: string }> = {
   KnowledgeQA: { icon: ChatDotRound, description: "从知识库中查找答案" },
   KnowledgeBaseManagement: { icon: Collection, description: "组织与浏览团队知识" },
   DocumentManagement: { icon: Document, description: "文档与版本集中管理" },
+  DocumentCreate: { icon: Document, description: "编写 Word 或 Markdown 文档" },
   RobotManagement: { icon: Cpu, description: "管理设备与调用状态" },
   UserManagement: { icon: User, description: "管理平台成员" },
   RoleManagement: { icon: Setting, description: "管理团队角色" },

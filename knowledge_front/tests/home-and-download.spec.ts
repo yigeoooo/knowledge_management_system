@@ -94,6 +94,46 @@ test('document download uses the selected version id', async ({ page }) => {
   expect(downloadUrls.at(-1)?.searchParams.get('version_id')).toBe(versionId)
 })
 
+test('DOCX detail preview renders returned rich HTML instead of plain text', async ({ page }) => {
+  const baseId = '00000000-0000-4000-8000-000000000101'
+  const documentId = '00000000-0000-4000-8000-000000000102'
+  const versionId = '00000000-0000-4000-8000-000000000103'
+  const version = {
+    id: versionId, document_id: documentId, version_no: 1, filename: 'formatted.docx',
+    content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    file_size: 256, status: 'INDEXED', chunk_count: 2, error_message: null,
+    created_at: '2026-10-23T00:00:00Z', task: null,
+  }
+  const detail = {
+    id: documentId, knowledge_base_id: baseId, title: '格式文档', status: 'active',
+    current_version_id: versionId, updated_at: '2026-10-23T00:00:00Z', versions: [version],
+  }
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url())
+    let data: unknown
+    if (url.pathname === '/api/v1/auth/refresh') {
+      data = { access_token: 'test-token', user: { id: 'admin', display_name: 'Admin', role: 'super_admin' }, pages: [{ code: 'documents', name: '文档管理', route_path: '/documents', route_name: 'DocumentManagement', component_key: 'DocumentManagement', page_type: 'menu', sort_order: 1, is_visible: true }] }
+    } else if (url.pathname === '/api/v1/knowledge-bases') {
+      data = { items: [{ id: baseId, name: '格式知识库', code: 'formatted', status: 'active' }] }
+    } else if (url.pathname === `/api/v1/knowledge-bases/${baseId}/documents`) {
+      data = { items: [{ ...detail, current_version: version }], total: 1, page: 1, page_size: 20 }
+    } else if (url.pathname === `/api/v1/documents/${documentId}`) {
+      data = detail
+    } else if (url.pathname === `/api/v1/documents/${documentId}/text-preview`) {
+      data = { document: detail, version, content: '标题\n\n正文', html: '<h1>标题</h1><p><strong>加粗正文</strong></p><table class="docx-preview-table"><tbody><tr><td>表格</td></tr></tbody></table>' }
+    } else {
+      throw new Error(`Unexpected API request: ${url.pathname}`)
+    }
+    await route.fulfill({ json: { code: 0, message: 'ok', data } })
+  })
+  await page.goto('/documents')
+  await page.getByRole('button', { name: '预览', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '格式文档' })).toBeVisible()
+  await expect(page.locator('.document-preview h1')).toHaveText('标题')
+  await expect(page.locator('.document-preview strong')).toHaveText('加粗正文')
+  await expect(page.locator('.document-preview .docx-preview-table')).toBeVisible()
+})
+
 test('robot management supports create, detail, edit, and disable', async ({ page }) => {
   const robotId = '00000000-0000-4000-8000-000000000010'
   let robot = {

@@ -16,6 +16,7 @@ interface Source {
   modality: "text" | "image" | "video";
   score: number | null;
   heading_path: string | null;
+  content_html?: string | null;
   content: string | null;
   preview_url?: string | null;
 }
@@ -264,7 +265,7 @@ onBeforeUnmount(() => {
           <div v-if="source.heading_path" class="source-meta">{{ source.heading_path }}</div>
           <video v-if="source.modality === 'video' && source.preview_url" class="source-video" controls :src="source.preview_url" preload="metadata" />
           <img v-else-if="source.modality === 'image' && source.preview_url" class="source-image" :src="source.preview_url" :alt="source.filename" loading="lazy" />
-          <SourceContent v-else-if="source.modality === 'text'" class="source-markdown" :content="source.content || ''" :filename="source.filename" />
+          <SourceContent v-else-if="source.modality === 'text'" class="source-markdown" :content="source.content || ''" :filename="source.filename" :content-html="source.content_html" />
           <div v-else class="source-unavailable">媒体预览暂不可用，请稍后重新提问。</div>
           <div v-if="source.modality !== 'text'" class="source-meta">相关媒体，未用于推断具体内容</div>
         </article>

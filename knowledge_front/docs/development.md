@@ -65,6 +65,7 @@ VITE_API_BASE_URL=/api/v1
 
 - `/dashboard`
 - `/knowledge-bases`
+- `/create-document`
 - `/documents`
 - `/robots`
 - `/users`
@@ -76,7 +77,7 @@ VITE_API_BASE_URL=/api/v1
 
 页面列表以数据库 `pages` 表和登录接口返回结果为准。上面的路径是推荐初始路由，不是绕过后端权限的安全机制。
 
-工作台的快捷入口、统计卡片及知识问答按钮根据当前 `session.pages` 生成，只展示已授权、可见且已注册的页面；不展示按钮资源和隐藏页面。快捷入口按页面排序，移除平台建设进度。`GET /dashboard` 校验当前角色的工作台权限，只返回已授权页面对应的统计字段；未授权工作台的请求返回 403。
+工作台的快捷入口、统计卡片及知识问答按钮根据当前 `session.pages` 生成，只展示已授权、可见且已注册的页面；不展示按钮资源和隐藏页面。快捷入口按页面排序，移除平台建设进度。`GET /dashboard` 校验当前角色的工作台权限，只返回已授权页面对应的统计字段；`super_admin` 直接放行，其他角色未获工作台授权时返回 403。
 
 ## 5. 网页提问
 
@@ -111,11 +112,11 @@ Authorization: Bearer <access_token>
 
 ## 6. 管理页面
 
-超级管理员页面调用 Flask 管理接口完成数据修改。知识库页面支持创建、编辑、停用和归档；创建成功后可直接进入该知识库的文档管理页面。文档必须先选择所属知识库；上传 Markdown、TXT、PDF、Word、图片或视频时，前端先请求预签名地址，然后上传到 MinIO，最后调用上传完成接口触发索引任务。预签名上传失败时使用同源回退接口。前端不直接使用 MinIO Access Key。Markdown/TXT 可在线编辑并保存为新版本，其他类型通过上传新版本更新。问答页面调用 `/web/query` 获取回答及来源；`/web/search` 保留为纯检索接口。
+获得对应页面权限的角色调用 Flask 管理接口完成数据修改。`super_admin` 自动获得全部启用页面及对应接口权限；其他角色由后端逐次校验角色页面授权。知识库页面支持创建、编辑、停用和归档；创建成功后，若同时获得文档管理页面权限，可直接进入该知识库的文档管理页面。文档必须先选择所属知识库；上传 Markdown、TXT、PDF、Word、图片或视频时，前端先请求预签名地址，然后上传到 MinIO，最后调用上传完成接口触发索引任务。预签名上传失败时使用同源回退接口。前端不直接使用 MinIO Access Key。Markdown/TXT 可在线编辑并保存为新版本，DOCX 上传后保留原始文件用于下载，并由 `/text-preview` 转换为安全富文本 HTML 展示标题、字体、颜色、列表和表格；其他类型通过上传新版本更新。问答页面调用 `/web/query` 获取回答及来源；`/web/search` 保留为纯检索接口。
 
 文档修改应按新版本提交；文档删除、知识库停用、机器人停用和用户停用都需要显示二次确认，并在操作完成后刷新后端状态。
 
-`/robots` 使用独立的 `RobotManagementView.vue`，支持序列号或名称搜索、状态筛选、分页、注册、详情、编辑、启用／停用。机器人 DELETE 接口采用停用语义，保留机器人记录和问答日志关联；重新启用通过编辑表单将状态改为启用。所有管理接口仅允许超级管理员访问，序列号由后端保证唯一。
+`/robots` 使用独立的 `RobotManagementView.vue`，支持序列号或名称搜索、状态筛选、分页、注册、详情、编辑、启用／停用。机器人 DELETE 接口采用停用语义，保留机器人记录和问答日志关联；重新启用通过编辑表单将状态改为启用。所有机器人管理接口按机器人管理页面权限校验，序列号由后端保证唯一。
 
 状态筛选的清空值统一为 `''`（`value-on-clear=""`），列表请求使用 `lib/query.ts` 的 `queryParams`，省略空字符串、`undefined` 和 `null` 参数。未选择状态时查询当前权限和其他条件范围内的全部状态；选择后按该状态查询。后端列表接口兼容空白及旧客户端序列化的 `status=undefined`／`status=null`，均按未筛选处理；已有状态枚举校验继续生效。
 
@@ -129,13 +130,27 @@ Root 和当前登录账号的状态、角色、删除操作由前后端共同保
 
 ## 8. 角色管理（已接入）
 
-`/roles` 使用独立的角色管理页面，支持按名称或编码分页查询、新增、编辑、切换系统／自定义类型、启用／停用和删除。角色编码唯一，编辑角色的编码、名称或类型不受当前用户数影响；停用角色会使该角色下的用户无法登录。`super_admin` 角色的关键字段受保护，仍被用户使用的角色不能删除。角色接口由后端超级管理员权限统一保护。
+`/roles` 使用独立的角色管理页面，支持按名称或编码分页查询、新增、编辑、切换系统／自定义类型、启用／停用和删除。角色编码唯一，编辑角色的编码、名称或类型不受当前用户数影响；停用角色会使该角色下的用户无法登录。`super_admin` 角色的关键字段受保护，仍被用户使用的角色不能删除。角色写接口要求角色管理页面权限，角色页面权限配置页可读取角色选项；`super_admin` 直接放行。
 
 `/role-permissions` 支持选择角色并勾选页面访问权限，点击保存后通过 `PUT /roles/{id}/pages` 覆盖该角色的授权。接口会校验页面 ID、拒绝重复资源并写入审计日志；`super_admin` 必须保留全部启用页面权限。相关用户刷新或重新登录后获得新的页面列表。
 
 `/qa-logs` 的每条问答记录都可以打开居中的详情对话框，查看历史问题、回答、状态、知识库、模型、耗时、召回数量和引用资料。机器人详情、用户详情等信息展示统一使用 Dialog，不使用右侧抽屉。
 
-问答页面和历史详情共用 `MarkdownContent.vue` 渲染答案和 Markdown 引用，支持标题、列表、表格与代码块，并通过 DOMPurify 清理 HTML。`SourceContent.vue` 按文件类型展示引用，PDF、TXT、Word 提取文本保留换行，不作为 Markdown 解析。PDF 中由字体映射产生的控制字符和兼容汉字由后端统一清理，新索引及历史引用均适用，无需重新上传文件。
+问答页面和历史详情共用 `MarkdownContent.vue` 渲染答案和 Markdown 引用，支持标题、列表、表格与代码块，并通过 DOMPurify 清理 HTML。`SourceContent.vue` 按文件类型展示引用，PDF、TXT 和旧版 DOC 提取文本保留换行；DOCX 优先使用 `content_html`，由 `WordContent.vue` 通过 DOMPurify 及 CSS 属性白名单展示；无富文本时回退到原引用文字。PDF 中由字体映射产生的控制字符和兼容汉字由后端统一清理，新索引及历史引用均适用，无需重新上传文件。
 
 审计日志使用后端返回的 `user_name` 展示“操作人”，不在表格中展示用户 ID。名称取用户的显示名称，缺失时使用用户名；无关联用户的系统操作显示“系统”，逻辑删除用户的历史操作仍保留姓名。
 
+## 9. 创建文档
+
+`/create-document` 使用 `CreateDocumentView.vue`，组件标识为 `DocumentCreate`，页面编码为 `document_create`。页面由角色授权控制，支持 Markdown 分栏编辑与预览，以及基于 Tiptap 的 Word 可视化编辑。保存调用 `POST /documents/create`；请求格式为 `{ knowledge_base_id, title, format, content, request_id }`，其中 `format` 为 `md` 或 `docx`，`content` 分别为 Markdown 字符串或 Tiptap JSON 文档。服务端生成真实文件，复用现有上传完成校验、MinIO 存储、索引任务和审计流程。
+
+保存后通过 `GET /documents/created/{id}` 查询本人文档的处理状态，不需要文档管理权限；其他人的文档不会通过此接口暴露。相同内容的重试复用 UUID 请求编号，输入变化后使用新编号。草稿按用户保存在 `sessionStorage`，保存成功后清除；正文限制 200,000 字符。格式切换需确认清空正文，离开时提示未保存内容。Word 普通表格支持增行、增列和删除，支持合并单元格。
+
+
+### 已有 Word 文档编辑与引用（2026-10-28）
+
+`DocumentManagementView.vue` 对 DOCX 展示“在线编辑”，按所选版本调用 `GET /documents/{id}/word-content?version_id=...` 获取 Tiptap JSON，复用 `WordEditor.vue`。保存调用 `POST /documents/{id}/word-content`，提交 `{ base_version_id, content, request_id }`，成功返回新版本并重新加载预览。保存失败保留编辑器，未改变内容的重试复用 request_id；编辑时禁止切换版本和上传替换，取消、关闭和离开会检查未保存改动。
+
+DOCX 详情和 Word 引用共享 `WordContent.vue` 的清理和格式样式。`content_html` 仅用于显示；答案、检索和日志原始引用文本继续使用 content。后端以引用 version_id 从对象存储恢复格式，历史日志不会被最新文档替换。
+
+验证：后端 `tests/test_word_editing.py`、`tests/test_word_citations.py`；浏览器 `tests/word-editing.spec.ts` 会启动隔离 Flask/SQLite 服务，使用真实 DOCX 导入导出、保存、索引和下载接口，存储及 Embedding 使用测试替身。`tests/dashboard-and-log-rendering.spec.ts` 检查两个引用页面的格式和 HTML 清理。后端虚拟环境需先安装开发依赖，测试服务不连接业务数据库和 MinIO。

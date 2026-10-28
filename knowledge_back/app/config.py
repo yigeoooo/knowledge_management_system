@@ -28,6 +28,7 @@ def configuration(overrides):
         secret = path.read_text().strip()
     if len(secret) < 32:
         raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters")
+    max_document_size = int(overrides.get("MAX_DOCUMENT_SIZE", os.getenv("MAX_DOCUMENT_SIZE", str(200 * 1024 * 1024))))
     return {
         "SQLALCHEMY_DATABASE_URI": URL.create(
             "postgresql+psycopg",
@@ -41,7 +42,7 @@ def configuration(overrides):
         "ACCESS_TOKEN_SECONDS": 900,
         "REFRESH_TOKEN_DAYS": 7,
         "SESSION_COOKIE_SECURE": production,
-        "MAX_CONTENT_LENGTH": int(os.getenv("MAX_DOCUMENT_SIZE", str(20 * 1024 * 1024))),
+        "MAX_CONTENT_LENGTH": max_document_size,
         "MINIO_ENDPOINT": os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000"),
         "MINIO_PUBLIC_ENDPOINT": os.getenv(
             "MINIO_PUBLIC_ENDPOINT", os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
@@ -51,7 +52,7 @@ def configuration(overrides):
         "MINIO_BUCKET": os.getenv("MINIO_BUCKET", "knowledge-documents"),
         "MINIO_SECURE": os.getenv("MINIO_SECURE", "false").lower() in {"1", "true", "yes"},
         "MINIO_URL_SECONDS": int(os.getenv("MINIO_URL_SECONDS", "600")),
-        "MAX_DOCUMENT_SIZE": int(os.getenv("MAX_DOCUMENT_SIZE", str(20 * 1024 * 1024))),
+        "MAX_DOCUMENT_SIZE": max_document_size,
         "DOCUMENT_UPLOAD_SECONDS": int(os.getenv("DOCUMENT_UPLOAD_SECONDS", "900")),
         "DEEPSEEK_BASE_URL": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),

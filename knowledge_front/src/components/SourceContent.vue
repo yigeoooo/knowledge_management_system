@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import WordContent from "./WordContent.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 
-const props = defineProps<{ content: string; filename?: string }>();
+const props = defineProps<{ content: string; filename?: string; contentHtml?: string | null }>();
 const plainText = computed(() => /\.(pdf|txt|docx?)$/i.test(props.filename || ""));
 </script>
 
 <template>
-  <div v-if="plainText" class="source-plain-text">{{ content }}</div>
+  <WordContent v-if="/\.docx$/i.test(filename || '') && contentHtml" :html="contentHtml" />
+  <div v-else-if="plainText" class="source-plain-text">{{ content }}</div>
   <MarkdownContent v-else :content="content" />
 </template>
 

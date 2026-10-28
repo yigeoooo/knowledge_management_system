@@ -27,7 +27,7 @@ SCHEMA = {
     "roles": (
         "用户角色：包含普通用户 user 和超级管理员 super_admin，可扩展其他角色。",
         {
-            "code": "唯一角色编码；后端管理接口使用 super_admin 编码校验管理员身份。",
+            "code": "唯一角色编码；super_admin 放行全部功能，其他角色按页面授权校验。",
             "name": "角色的中文显示名称。",
             "is_system": "角色类型：true 系统角色、false 自定义角色；管理员可创建或切换类型。",
         },

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { onBeforeRouteLeave, useRoute } from "vue-router";
+import type { JSONContent } from "@tiptap/core";
+const WordEditor = defineAsyncComponent(() => import("../components/WordEditor.vue"));
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Download,
@@ -15,6 +17,7 @@ import {
 } from "@element-plus/icons-vue";
 import { api, uploadFile } from "../lib/session";
 import { queryParams } from "../lib/query";
+import WordContent from "../components/WordContent.vue";
 import { renderMarkdown } from "../lib/markdown";
 
 const route = useRoute();
@@ -61,6 +64,7 @@ interface UploadTicket {
   required_headers: Record<string, string>;
 }
 
+const maxFileSize = ref(200 * 1024 * 1024);
 const bases = ref<KnowledgeBase[]>([]);
 const selectedBase = ref("");
 const rows = ref<DocumentRow[]>([]);
@@ -90,11 +94,40 @@ const detailError = ref("");
 const detail = ref<DocumentDetail | null>(null);
 const selectedVersionId = ref("");
 const previewText = ref("");
+const previewHtml = ref("");
 const previewUrl = ref("");
 const previewKind = ref<"text" | "image" | "video" | "pdf" | "download">("text");
 const editing = ref(false);
 const editorText = ref("");
 const editorBusy = ref(false);
+const wordContent = ref<JSONContent>({ type: "doc", content: [] });
+const editBaseId = ref("");
+const editBaseline = ref("");
+const wordReady = ref(false);
+let saveAttempt: { payload: string; id: string } | null = null;
+const isWord = computed(() => extension(selectedVersion.value?.filename || "") === ".docx");
+const canEdit = computed(() => isText.value || isWord.value);
+const dirty = computed(() => editing.value && (isWord.value
+  ? JSON.stringify(wordContent.value) !== editBaseline.value
+  : editorText.value !== previewText.value));
+function updateWord(content: JSONContent) {
+  wordContent.value = content;
+  if (!wordReady.value) { editBaseline.value = JSON.stringify(content); wordReady.value = true; }
+}
+async function discardEdits() {
+  if (editorBusy.value) return false;
+  if (dirty.value) {
+    try { await ElMessageBox.confirm("放弃尚未保存的修改？", "未保存的文档", { confirmButtonText: "放弃修改", cancelButtonText: "继续编辑", type: "warning" }); }
+    catch { return false; }
+  }
+  editing.value = false;
+  return true;
+}
+async function closeDetail(done: () => void) { if (await discardEdits()) done(); }
+function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || editorBusy.value) { event.preventDefault(); event.returnValue = ""; } }
+onBeforeRouteLeave(discardEdits);
+onMounted(() => window.addEventListener("beforeunload", beforeUnload));
+onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
 
 let indexPollTimer: number | null = null;
 let indexPollAttempts = 0;
@@ -231,9 +264,10 @@ async function loadDocuments() {
       q: applied.q,
       status: applied.status,
     });
-    const res = await api<{ items: DocumentRow[]; total: number }>(
+    const res = await api<{ items: DocumentRow[]; total: number; max_file_size?: number }>(
       `/knowledge-bases/${selectedBase.value}/documents?${params}`
     );
+    if (res.max_file_size && res.max_file_size > 0) maxFileSize.value = res.max_file_size;
     rows.value = res.items;
     total.value = res.total;
   } catch (e) {
@@ -253,6 +287,11 @@ function search() {
 
 function chooseFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
+  if (file && (file.size === 0 || file.size > maxFileSize.value)) {
+    selectedFile.value = null;
+    uploadError.value = `文件需非空，且不超过 ${formatSize(maxFileSize.value)}`;
+    return;
+  }
   selectedFile.value = file || null;
   uploadTitle.value = file?.name.replace(/\.[^.]+$/u, "") || "";
   uploadError.value = "";
@@ -267,8 +306,13 @@ function openUpload() {
 }
 
 function chooseReplacementFile(event: Event) {
-  replacementFile.value = (event.target as HTMLInputElement).files?.[0] || null;
+  const file = (event.target as HTMLInputElement).files?.[0] || null;
+  replacementFile.value = file;
   replaceError.value = "";
+  if (file && (file.size === 0 || file.size > maxFileSize.value)) {
+    replacementFile.value = null;
+    replaceError.value = `文件需非空，且不超过 ${formatSize(maxFileSize.value)}`;
+  }
 }
 
 function openReplace() {
@@ -343,7 +387,7 @@ async function openDocument(row: DocumentRow, startEditing = false) {
     detail.value = await api<DocumentDetail>(`/documents/${row.id}`);
     selectedVersionId.value = detail.value.current_version_id || detail.value.versions[0]?.id || "";
     await loadVersionContent();
-    if (startEditing && isText.value) editing.value = true;
+    if (startEditing && canEdit.value) await beginEdit();
   } catch (e) {
     detailError.value = (e as Error).message;
   } finally {
@@ -354,6 +398,7 @@ async function openDocument(row: DocumentRow, startEditing = false) {
 async function loadVersionContent() {
   if (!detail.value || !selectedVersionId.value) return;
   previewText.value = "";
+  previewHtml.value = "";
   previewUrl.value = "";
   previewKind.value = "text";
   const version = selectedVersion.value;
@@ -366,10 +411,11 @@ async function loadVersionContent() {
       previewText.value = res.content;
       editorText.value = res.content;
     } else if (extension(version.filename) === ".docx") {
-      const res = await api<{ content: string }>(
+      const res = await api<{ content: string; html?: string }>(
         `/documents/${detail.value.id}/text-preview?version_id=${version.id}`
       );
       previewText.value = res.content;
+      previewHtml.value = res.html || "";
       previewKind.value = "text";
     } else if (
       [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm", ".mov"].includes(
@@ -417,48 +463,70 @@ async function downloadVersion(version?: Version | null) {
   }
 }
 
-function beginEdit() {
-  if (!isText.value) {
-    ElMessage.info("图片、视频、PDF 和 Word 文件请上传新版本进行修改");
-    return;
-  }
-  editorText.value = previewText.value;
-  editing.value = true;
+async function beginEdit() {
+  if (!detail.value || !selectedVersion.value || !canEdit.value || editorBusy.value) return;
+  detailError.value = "";
+  editorBusy.value = true;
+  try {
+    editBaseId.value = selectedVersion.value.id;
+    saveAttempt = null;
+    if (isWord.value) {
+      const result = await api<{ content: JSONContent }>(`/documents/${detail.value.id}/word-content?version_id=${editBaseId.value}`);
+      wordContent.value = result.content;
+      editBaseline.value = JSON.stringify(result.content);
+      wordReady.value = false;
+    } else {
+      editorText.value = previewText.value;
+    }
+    editing.value = true;
+  } catch (error) {
+    detailError.value = (error as Error).message;
+  } finally { editorBusy.value = false; }
 }
 
-async function saveEdit() {
-  if (!detail.value || !selectedVersion.value || editorBusy.value) return;
+async function saveEdit(): Promise<boolean> {
+  if (!detail.value || !selectedVersion.value || editorBusy.value) return false;
   editorBusy.value = true;
   detailError.value = "";
   try {
-    const filename = selectedVersion.value.filename;
-    const file = new File([editorText.value], filename, {
-      type: selectedVersion.value.content_type || "text/markdown;charset=utf-8",
-    });
-    const ticket = await api<UploadTicket>("/documents/presign-upload", {
-      method: "POST",
-      body: JSON.stringify({
-        knowledge_base_id: detail.value.knowledge_base_id,
-        document_id: detail.value.id,
-        base_version_id: selectedVersion.value.id,
-        filename,
-        title: detail.value.title,
-        file_size: file.size,
-        content_type: file.type,
-      }),
-    });
-    await completeUpload(ticket, file);
+    let versionId: string;
+    if (isWord.value) {
+      const body = { base_version_id: editBaseId.value, content: wordContent.value };
+      const payload = JSON.stringify(body);
+      if (!saveAttempt || saveAttempt.payload !== payload) saveAttempt = { payload, id: crypto.randomUUID() };
+      const result = await api<{ version: Version }>(`/documents/${detail.value.id}/word-content`, {
+        method: "POST", body: JSON.stringify({ ...body, request_id: saveAttempt.id }), timeoutMs: 120000,
+      });
+      versionId = result.version.id;
+    } else {
+      const filename = selectedVersion.value.filename;
+      const file = new File([editorText.value], filename, {
+        type: selectedVersion.value.content_type || "text/markdown;charset=utf-8",
+      });
+      const ticket = await api<UploadTicket>("/documents/presign-upload", {
+        method: "POST",
+        body: JSON.stringify({
+          knowledge_base_id: detail.value.knowledge_base_id, document_id: detail.value.id,
+          base_version_id: editBaseId.value, filename, title: detail.value.title,
+          file_size: file.size, content_type: file.type,
+        }),
+      });
+      await completeUpload(ticket, file);
+      versionId = ticket.version.id;
+    }
     ElMessage.success("新版本已提交，等待索引完成");
     editing.value = false;
     await openDocument(detail.value, false);
-    if (detail.value?.versions.some((v) => v.id === ticket.version.id)) {
-      selectedVersionId.value = ticket.version.id;
+    if (detail.value?.versions.some((v) => v.id === versionId)) {
+      selectedVersionId.value = versionId;
       await loadVersionContent();
     }
     await loadDocuments();
     startIndexPolling();
+    return true;
   } catch (e) {
     detailError.value = (e as Error).message;
+    return false;
   } finally {
     editorBusy.value = false;
   }
@@ -571,7 +639,7 @@ onBeforeUnmount(stopIndexPolling);
 
   <el-alert
     class="phase-notice"
-    title="支持 Markdown、TXT、PDF、Word、图片和视频；文本文件可在线编辑，其他文件可预览、下载并上传新版本。"
+    title="支持 Markdown、TXT 和 DOCX 在线编辑，保存后生成新版本；其他文件可预览、下载并上传新版本。"
     type="info"
     :closable="false"
     show-icon
@@ -795,7 +863,7 @@ onBeforeUnmount(stopIndexPolling);
           accept=".md,.markdown,.txt,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseFile"
         />
-        <div class="form-tip">单文件最大 20 MB，文件上传后进入索引任务。</div>
+        <div class="form-tip">单文件最大 {{ formatSize(maxFileSize) }}，文件上传后进入索引任务。</div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -844,7 +912,7 @@ onBeforeUnmount(stopIndexPolling);
           accept=".md,.markdown,.txt,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseReplacementFile"
         />
-        <div class="form-tip">支持 Markdown、TXT、PDF、Word、图片和视频，单文件最大 20 MB。</div>
+        <div class="form-tip">支持 Markdown、TXT、PDF、Word、图片和视频，单文件最大 {{ formatSize(maxFileSize) }}。</div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -863,6 +931,8 @@ onBeforeUnmount(stopIndexPolling);
   <el-dialog
     v-model="detailOpen"
     title="文档详情"
+    :before-close="closeDetail"
+    :close-on-press-escape="!editing"
     fullscreen
     destroy-on-close
   >
@@ -888,6 +958,7 @@ onBeforeUnmount(stopIndexPolling);
         <div class="document-actions">
           <el-select
             v-model="selectedVersionId"
+            :disabled="editing || editorBusy"
             placeholder="选择版本"
             @change="changeVersion"
           >
@@ -901,6 +972,7 @@ onBeforeUnmount(stopIndexPolling);
           <el-button
             v-if="detail.status === 'active'"
             :icon="Plus"
+            :disabled="editing || editorBusy"
             @click="openReplace"
           >
             上传新版本
@@ -912,7 +984,8 @@ onBeforeUnmount(stopIndexPolling);
             下载
           </el-button>
           <el-button
-            v-if="isText && !editing && detail.status === 'active'"
+            v-if="canEdit && !editing && detail.status === 'active'"
+            :loading="editorBusy"
             type="primary"
             :icon="Edit"
             @click="beginEdit"
@@ -922,8 +995,13 @@ onBeforeUnmount(stopIndexPolling);
         </div>
       </div>
 
+      <section v-if="editing && isWord" class="word-edit-panel">
+        <p>编辑 DOCX 正文，保存为新版本。原版本可在版本历史中下载。</p>
+        <WordEditor :key="editBaseId" :content="wordContent" :title="detail.title"
+          :disabled="editorBusy" :save-document="saveEdit" @change="updateWord" />
+      </section>
       <div
-        v-if="editing"
+        v-else-if="editing"
         class="editor-layout"
       >
         <el-input
@@ -941,6 +1019,7 @@ onBeforeUnmount(stopIndexPolling);
         </div>
       </div>
 
+      <WordContent v-else-if="previewKind === 'text' && previewHtml" class="document-preview" :html="previewHtml" />
       <div
         v-else-if="previewKind === 'text'"
         class="markdown-body document-preview"
@@ -1025,7 +1104,7 @@ onBeforeUnmount(stopIndexPolling);
     </div>
     <template #footer>
       <div v-if="editing">
-        <el-button @click="editing = false">取消编辑</el-button>
+        <el-button :disabled="editorBusy" @click="discardEdits">取消编辑</el-button>
         <el-button
           type="primary"
           :loading="editorBusy"

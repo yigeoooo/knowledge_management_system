@@ -24,17 +24,50 @@ def token_hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def identity(user):
-    pages = db.session.scalars(
-        db.select(Page)
-        .join(RolePagePermission)
-        .where(
+def accessible_pages(user):
+    query = db.select(Page).where(Page.status == "active")
+    if user.role.code != "super_admin":
+        query = query.join(RolePagePermission).where(
             RolePagePermission.role_id == user.role_id,
             RolePagePermission.can_view.is_(True),
-            Page.status == "active",
         )
-        .order_by(Page.sort_order)
-    ).all()
+    return db.session.scalars(query.order_by(Page.sort_order, Page.id)).all()
+
+
+def has_page_access(*paths):
+    if g.user.role.code == "super_admin":
+        return True
+    return db.session.scalar(
+        db.select(Page.id).join(RolePagePermission).where(
+            RolePagePermission.role_id == g.user.role_id,
+            RolePagePermission.can_view.is_(True),
+            Page.status == "active",
+            Page.page_type != "button",
+            Page.route_path.in_(paths),
+        ).limit(1)
+    ) is not None
+
+
+def require_page_access(*paths):
+    if not has_page_access(*paths):
+        raise ApiError("没有访问此功能的权限", 403, 40301)
+
+
+def page_required(*paths):
+    def decorate(view):
+        @authenticated
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            require_page_access(*paths)
+            return view(*args, **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
+def identity(user):
+    pages = accessible_pages(user)
     return {
         "user": {
             "id": str(user.id),

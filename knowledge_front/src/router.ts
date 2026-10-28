@@ -9,6 +9,7 @@ const components: Record<string, NonNullable<RouteRecordRaw['component']>> = {
   Profile: () => import('./views/ProfileView.vue'),
   KnowledgeBaseManagement: () => import('./views/KnowledgeBaseManagementView.vue'),
   DocumentManagement: () => import('./views/DocumentManagementView.vue'),
+  DocumentCreate: () => import('./views/CreateDocumentView.vue'),
   RobotManagement: () => import('./views/RobotManagementView.vue'),
   UserManagement: () => import('./views/UsersView.vue'),
   RoleManagement: () => import('./views/RoleManagementView.vue'),

@@ -29,6 +29,7 @@ const icons: Record<string, unknown> = {
   knowledge_qa: ChatDotRound,
   knowledge_bases: Collection,
   documents: Document,
+  document_create: Document,
   robots: Cpu,
   users: User,
   roles: Setting,

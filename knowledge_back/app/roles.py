@@ -6,10 +6,10 @@ from flask import Blueprint, g, request
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
+from .auth import page_required
 from .extensions import db
 from .http import ApiError, status_filter, success
 from .models import AuditLog, Role, RolePagePermission, User
-from .workspace import admin_only
 
 roles = Blueprint("roles", __name__, url_prefix="/api/v1/roles")
 EDITABLE_FIELDS = {"code", "name", "description", "status", "is_system"}
@@ -132,7 +132,7 @@ def commit_role_change():
 
 
 @roles.get("")
-@admin_only
+@page_required("/roles", "/role-permissions")
 def list_roles():
     try:
         page = int(request.args.get("page", "1"))
@@ -186,7 +186,7 @@ def list_roles():
 
 
 @roles.get("/<uuid:role_id>")
-@admin_only
+@page_required("/roles", "/role-permissions")
 def role_detail(role_id):
     role = find_role(role_id)
     user_count = db.session.scalar(db.select(func.count(User.id)).where(User.role_id == role.id))
@@ -194,7 +194,7 @@ def role_detail(role_id):
 
 
 @roles.post("")
-@admin_only
+@page_required("/roles")
 def create_role():
     values = validated_input(creating=True)
     ensure_unique_code(values["code"])
@@ -215,7 +215,7 @@ def create_role():
 
 
 @roles.put("/<uuid:role_id>")
-@admin_only
+@page_required("/roles")
 def update_role(role_id):
     role = find_role(role_id, lock=True)
     values = validated_input(current=role)
@@ -236,7 +236,7 @@ def update_role(role_id):
 
 
 @roles.delete("/<uuid:role_id>")
-@admin_only
+@page_required("/roles")
 def delete_role(role_id):
     role = find_role(role_id, lock=True)
     deleted_id = str(role.id)

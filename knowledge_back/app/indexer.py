@@ -77,7 +77,14 @@ def _extract_text(filename: str, content: bytes) -> str | None:
             from docx import Document as WordDocument
 
             document = WordDocument(__import__("io").BytesIO(content))
-            paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+            from docx.table import Table
+
+            paragraphs = []
+            for block in document.iter_inner_content():
+                if isinstance(block, Table):
+                    paragraphs.extend(" | ".join(cell.text for cell in row.cells) for row in block.rows)
+                elif block.text.strip():
+                    paragraphs.append(block.text)
             return "\n\n".join(paragraphs).strip()
         except Exception as error:
             raise RuntimeError("Word 文本提取失败，请确认文件格式有效") from error

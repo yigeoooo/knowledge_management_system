@@ -43,6 +43,8 @@
 
 ### 3.2 页面权限规则
 
+`super_admin` 对所有页面及对应接口的权限校验直接放行，并自动获得全部启用页面。其他角色在获得某页面权限后即可使用该页面对应的功能接口；后端使用统一的 `page_required` 校验，不再将管理功能固定限制为超级管理员。用户或角色停用仍禁止访问，Root 和内置角色的业务保护规则继续保留。
+
 页面权限表至少保存以下信息：
 
 - 页面名称
@@ -87,11 +89,11 @@
 8. 后续所有需要登录的请求携带 `Authorization: Bearer <access_token>`。
 9. Access Token 过期时使用刷新令牌换取新的 Access Token；退出登录时撤销会话。
 
-普通用户登录后只显示知识问答和个人信息页面。超级管理员可以显示用户管理、角色管理、页面权限、机器人管理、知识库管理、文档管理和问答日志等页面。
+普通用户默认显示知识问答和个人信息页面；获得额外页面授权后显示并可使用对应功能。超级管理员可以显示用户管理、角色管理、页面权限、机器人管理、知识库管理、文档管理和问答日志等页面。
 
 ### 4.2 知识库创建流程
 
-1. 超级管理员进入知识库管理页面。
+1. 获得知识库管理页面权限的用户进入该页面。
 2. 填写知识库名称、唯一 `code` 和描述。
 3. 后端检查 `code` 是否重复。
 4. 创建知识库记录并在 MinIO 创建该知识库专属的私有 Bucket，状态为 `active`。
@@ -101,7 +103,7 @@
 
 ### 4.3 机器人注册流程
 
-1. 超级管理员打开机器人管理页面。
+1. 获得机器人管理页面权限的用户打开该页面。
 2. 填写机器人序列号、名称和描述。
 3. 后端检查序列号是否唯一。
 4. 创建机器人记录，默认状态为 `active`。
@@ -121,7 +123,7 @@ knowledge_base 状态为 active
 
 ### 4.4 文档上传和索引流程
 
-1. 超级管理员在指定知识库下点击上传。
+1. 获得文档管理页面权限的用户在指定知识库下点击上传。
 2. 后端校验用户登录状态、角色、文件扩展名和大小；允许 Markdown、TXT、PDF、Word、图片和视频。
 3. 后端生成 MinIO 预签名上传 URL，或由后端接收文件后上传到 MinIO。
 4. 前端上传所选文件到 MinIO。
@@ -141,7 +143,7 @@ knowledge_base 状态为 active
 
 #### 浏览和下载
 
-1. 超级管理员请求知识库文档列表。
+1. 获得文档管理页面权限的用户请求知识库文档列表。
 2. 后端从 PostgreSQL 返回文档元数据和处理状态。
 3. 用户点击预览或下载时，后端生成短时有效的 MinIO 预签名 URL。
 4. 前端使用预签名 URL 读取文件。
@@ -149,7 +151,7 @@ knowledge_base 状态为 active
 #### 修改
 
 1. 管理员读取当前 Markdown/TXT 内容，或选择其他文件类型上传新版本。
-2. 前端允许编辑 Markdown/TXT 文本；PDF、Word、图片和视频通过上传新版本修改。
+2. 前端允许编辑 Markdown/TXT 文本和 DOCX 富文本；PDF、旧版 DOC、图片和视频通过上传新版本修改。
 3. 修改后的内容上传为新的 MinIO 对象。
 4. 后端创建新的文档版本，不直接覆盖当前版本。
 5. 旧版本保持可追溯，新版本进入 `PROCESSING`。
@@ -529,24 +531,24 @@ CREATE INDEX idx_chunks_embedding
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | GET | `/dashboard` | 已登录且角色拥有启用的工作台页面权限 | 仅返回角色已授权页面对应的统计字段 |
-| GET | `/users` | 超级管理员 | 用户分页列表 |
-| GET | `/users/{id}` | 超级管理员 | 用户详情，不包含密码字段 |
-| GET | `/users/role-options` | 超级管理员 | 用户编辑时的角色选项，停用角色不可新分配 |
-| POST | `/users` | 超级管理员 | 创建用户 |
-| PUT | `/users/{id}` | 超级管理员 | 修改用户、角色和状态 |
-| DELETE | `/users/{id}` | 超级管理员 | 逻辑删除用户、清除可用密码并撤销会话 |
-| POST | `/users/{id}/reset-password` | 超级管理员 | 规划接口；当前通过 PUT `/users/{id}` 的 password 字段重置密码 |
-| GET | `/roles` | 超级管理员 | 角色列表 |
-| POST | `/roles` | 超级管理员 | 创建角色 |
-| PUT | `/roles/{id}` | 超级管理员 | 修改角色 |
-| DELETE | `/roles/{id}` | 超级管理员 | 删除角色；`super_admin` 或仍被用户使用的角色不能删除 |
-| GET | `/roles/{id}/pages` | 超级管理员 | 查询角色页面 |
-| PUT | `/roles/{id}/pages` | 超级管理员 | 覆盖角色页面权限 |
-| GET | `/qa-logs/{id}` | 超级管理员 | 查询单条问答日志详情，包括问题、回答和引用来源 |
-| GET | `/audit-logs` | 超级管理员 | 分页查询审计日志，返回操作人的 `user_name`（显示名称，缺失时回退用户名；系统操作为“系统”） |
-| GET | `/pages` | 超级管理员 | 页面路由列表 |
-| POST | `/pages` | 超级管理员 | 新增页面路由 |
-| PUT | `/pages/{id}` | 超级管理员 | 修改页面路由 |
+| GET | `/users` | 用户管理页面权限 | 用户分页列表 |
+| GET | `/users/{id}` | 用户管理页面权限 | 用户详情，不包含密码字段 |
+| GET | `/users/role-options` | 用户管理页面权限 | 用户编辑时的角色选项，停用角色不可新分配 |
+| POST | `/users` | 用户管理页面权限 | 创建用户 |
+| PUT | `/users/{id}` | 用户管理页面权限 | 修改用户、角色和状态 |
+| DELETE | `/users/{id}` | 用户管理页面权限 | 逻辑删除用户、清除可用密码并撤销会话 |
+| POST | `/users/{id}/reset-password` | 用户管理页面权限 | 规划接口；当前通过 PUT `/users/{id}` 的 password 字段重置密码 |
+| GET | `/roles` | 角色管理页面权限或角色页面权限配置权限 | 角色列表 |
+| POST | `/roles` | 角色管理页面权限 | 创建角色 |
+| PUT | `/roles/{id}` | 角色管理页面权限 | 修改角色 |
+| DELETE | `/roles/{id}` | 角色管理页面权限 | 删除角色；`super_admin` 或仍被用户使用的角色不能删除 |
+| GET | `/roles/{id}/pages` | 角色页面权限配置权限 | 查询角色页面 |
+| PUT | `/roles/{id}/pages` | 角色页面权限配置权限 | 覆盖角色页面权限 |
+| GET | `/qa-logs/{id}` | 问答日志页面权限 | 查询单条问答日志详情，包括问题、回答和引用来源 |
+| GET | `/audit-logs` | 审计日志页面权限 | 分页查询审计日志，返回操作人的 `user_name`（显示名称，缺失时回退用户名；系统操作为“系统”） |
+| GET | `/pages` | 页面路由权限或角色页面权限配置权限 | 页面路由列表 |
+| POST | `/pages` | 页面路由权限 | 规划接口，尚未实现；当前通过 SQL 注册页面 |
+| PUT | `/pages/{id}` | 页面路由权限 | 规划接口，尚未实现 |
 
 `PUT /roles/{id}/pages` 请求示例：
 
@@ -564,46 +566,50 @@ CREATE INDEX idx_chunks_embedding
 
 用户删除使用 `status=deleted`，保留历史文档、问答与审计关联，清空原始密码并替换密码哈希；已删除用户名不复用。Root 的用户名、角色和启用状态固定，不能删除；当前登录账号不能修改自己的角色、停用或删除。新增、修改和删除操作必须在同一事务中记录审计日志，不将密码写入日志。
 
+以上页面权限校验对 `super_admin` 均直接放行。
+
 ### 7.3 知识库管理
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/knowledge-bases` | 登录用户 | 查询可用知识库 |
-| POST | `/knowledge-bases` | 超级管理员 | 创建知识库 |
-| GET | `/knowledge-bases/{id}` | 登录用户 | 查询详情 |
-| PUT | `/knowledge-bases/{id}` | 超级管理员 | 修改名称、描述、状态 |
-| DELETE | `/knowledge-bases/{id}` | 超级管理员 | 归档知识库 |
+| GET | `/knowledge-bases` | 知识库管理、文档管理、创建文档或知识问答页面权限 | 查询当前权限范围的知识库 |
+| POST | `/knowledge-bases` | 知识库管理页面权限 | 创建知识库 |
+| GET | `/knowledge-bases/{id}` | 知识库管理、文档管理、创建文档或知识问答页面权限 | 查询详情 |
+| PUT | `/knowledge-bases/{id}` | 知识库管理页面权限 | 修改名称、描述、状态 |
+| DELETE | `/knowledge-bases/{id}` | 知识库管理页面权限 | 归档知识库 |
 
-普通用户只能读取状态为 `active` 的知识库，用于网页提问。
+获得知识库管理页面权限的用户可读取全部状态；仅获得文档管理、创建文档或知识问答权限的用户只能读取状态为 `active` 的知识库。
 
 ### 7.4 机器人管理
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/robots` | 超级管理员 | 机器人列表 |
-| POST | `/robots` | 超级管理员 | 注册机器人 |
-| GET | `/robots/{id}` | 超级管理员 | 机器人详情 |
-| PUT | `/robots/{id}` | 超级管理员 | 修改名称、描述、状态 |
-| DELETE | `/robots/{id}` | 超级管理员 | 停用或删除机器人 |
+| GET | `/robots` | 机器人管理页面权限 | 机器人列表 |
+| POST | `/robots` | 机器人管理页面权限 | 注册机器人 |
+| GET | `/robots/{id}` | 机器人管理页面权限 | 机器人详情 |
+| PUT | `/robots/{id}` | 机器人管理页面权限 | 修改名称、描述、状态 |
+| DELETE | `/robots/{id}` | 机器人管理页面权限 | 停用或删除机器人 |
 
 ### 7.5 文档和 MinIO 文件
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/knowledge-bases/{id}/documents` | 超级管理员 | 文档分页列表 |
-| POST | `/documents/presign-upload` | 超级管理员 | 获取任意支持文件类型的 MinIO 上传地址 |
-| POST | `/documents/complete` | 超级管理员 | 上传完成并创建索引任务 |
-| GET | `/documents/{id}` | 超级管理员 | 文档和版本详情 |
-| GET | `/documents/{id}/content` | 超级管理员 | 读取 Markdown/TXT 当前或指定版本内容 |
-| GET | `/documents/{id}/download-url` | 超级管理员 | 获取临时下载地址 |
-| GET | `/documents/{id}/preview-url` | 超级管理员 | 获取图片、视频、PDF 等文件的临时预览地址 |
-| GET | `/documents/{id}/text-preview` | 超级管理员 | 提取 PDF/DOCX 文本用于预览 |
-| PUT | `/documents/versions/{version_id}/upload` | 超级管理员 | 预签名上传失败时的同源上传回退 |
-| PUT | `/documents/{id}` | 超级管理员 | 修改文档标题 |
-| POST | `/documents/{id}/reindex` | 超级管理员 | 重新建立索引 |
-| DELETE | `/documents/{id}` | 超级管理员 | 归档文档并清理对象 |
-| GET | `/tasks/{id}` | 超级管理员 | 查询索引任务状态 |
-| POST | `/web/search` | 登录用户 | 用文字查询同一知识库中的文本、图片和视频向量来源 |
+| GET | `/knowledge-bases/{id}/documents` | 文档管理页面权限 | 文档分页列表 |
+| POST | `/documents/create` | 创建文档页面权限 | 根据 Markdown 字符串或 Tiptap JSON 生成文件，保存到 MinIO 并创建索引任务 |
+| GET | `/documents/created/{id}` | 创建文档页面权限，且为本人创建（super_admin 放行） | 查询新建文档及索引状态 |
+| POST | `/documents/presign-upload` | 文档管理页面权限 | 获取任意支持文件类型的 MinIO 上传地址 |
+| POST | `/documents/complete` | 文档管理页面权限 | 上传完成并创建索引任务 |
+| GET | `/documents/{id}` | 文档管理页面权限 | 文档和版本详情 |
+| GET | `/documents/{id}/content` | 文档管理页面权限 | 读取 Markdown/TXT 当前或指定版本内容 |
+| GET | `/documents/{id}/download-url` | 文档管理页面权限 | 获取临时下载地址 |
+| GET | `/documents/{id}/preview-url` | 文档管理页面权限 | 获取图片、视频、PDF 等文件的临时预览地址 |
+| GET | `/documents/{id}/text-preview` | 文档管理页面权限 | PDF 返回清理后的文本；DOCX 同时返回 `html` 富格式预览和纯文本索引内容 |
+| PUT | `/documents/versions/{version_id}/upload` | 文档管理页面权限 | 预签名上传失败时的同源上传回退 |
+| PUT | `/documents/{id}` | 文档管理页面权限 | 修改文档标题 |
+| POST | `/documents/{id}/reindex` | 文档管理页面权限 | 重新建立索引 |
+| DELETE | `/documents/{id}` | 文档管理页面权限 | 归档文档并清理对象 |
+| GET | `/tasks/{id}` | 文档管理页面权限 | 查询索引任务状态 |
+| POST | `/web/search` | 知识问答页面权限 | 用文字查询同一知识库中的文本、图片和视频向量来源 |
 
 获取上传地址请求：
 
@@ -622,8 +628,8 @@ CREATE INDEX idx_chunks_embedding
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| POST | `/web/suggested-questions` | 登录用户 | 从当前知识库文档生成最多三个推荐问题 |
-| POST | `/web/query` | 登录用户 | 单轮非流式问答，返回答案与引用 |
+| POST | `/web/suggested-questions` | 知识问答页面权限 | 从当前知识库文档生成最多三个推荐问题 |
+| POST | `/web/query` | 知识问答页面权限 | 单轮非流式问答，返回答案与引用 |
 | GET | `/web/qa-logs` | 登录用户 | 规划：查看自己的问答记录，尚未实现 |
 
 请求示例：
@@ -730,7 +736,7 @@ PDF 文本在索引、检索来源序列化及历史问答展示时统一清理�
 - 登录接口限流，机器人接口按序列号和 IP 限流。
 - 上传限制为 Markdown、TXT、PDF、Word、图片和视频，并限制大小、文件名和请求体大小。
 - 所有管理操作写入审计日志。
-- 管理员注册机器人和用户的接口必须登录并校验超级管理员权限。
+- 注册机器人和用户的接口必须登录，并校验对应页面授权；super_admin 直接放行。
 - 机器人接口使用 HTTPS，后续可增加 API Key 或请求签名。
 
 ### 10.2 一致性
@@ -797,3 +803,17 @@ PDF 文本在索引、检索来源序列化及历史问答展示时统一清理�
 10. 网页和机器人问答都返回答案、来源和请求编号。
 11. 文档索引失败时可以查看错误原因并重新处理。
 12. 所有用户、机器人、文档和问答管理操作可以追溯到操作日志。
+
+### 补充：在线创建文档
+
+新页面 `/create-document` 默认仅为超级管理员注册权限，其他角色可通过角色页面权限配置获得。创建接口请求必须包含 `knowledge_base_id`、`title`（1–200 字符）、`format`（`md`/`docx`）、`content`（Markdown 字符串/Tiptap JSON）、`request_id`（UUID）。正文最多 200,000 字符，Word 支持标题、常见文字格式、列表、链接、代码块和普通表格，支持合并单元格，拒绝不支持的节点。
+
+保存生成真实 UTF-8 Markdown 或 DOCX 文件，使用所属知识库的独立 MinIO Bucket；复用上传完成校验、内容哈希、文档版本和索引队列。Word 段落及表格按文档顺序提取并进入索引。首次创建返回 201，同一用户、知识库及内容的相同请求编号重试返回已有结果，不重复保存；冲突返回 409。失败回滚元数据并尝试清理已写入的对象，内容不写入审计日志。创建页只能通过状态接口查询本人创建的文档，其他文档读取及管理操作继续要求文档管理页面权限。
+
+
+### DOCX 在线编辑与引用格式（2026-10-28）
+
+- `GET /documents/{id}/word-content?version_id=...`：要求文档管理页面权限，返回该 DOCX 版本的编辑 JSON。外部文件解析常见格式；不能安全表示的图片、修订、复杂域、分栏、多节等返回明确的 422 提示。
+- `POST /documents/{id}/word-content`：要求相同权限，请求 `{ base_version_id, content, request_id }`。锁定文档并校验基础版本为最新版本（包括尚未索引的版本），生成新 DOCX，写 MinIO、哈希、索引任务及 `document.word.edit` 审计。重试复用请求 UUID，原文件不可变，失败回滚并清理新对象。无需数据库结构迁移。
+- 生成文件使用标准 OPC 自定义 XML 部件保存编辑快照；正文、样式或编号被外部编辑器修改时指纹失效，转为重新解析实际 DOCX。保存已有文档沿用原包的样式和页眉页脚。
+- DOCX 引用在响应时增加 `content_html`，仅显示所引版本中对应文字范围。两处问答视图共享清理后的富文本组件；不改写日志的原始证据。存储不可用或定位失败回退为原文字。

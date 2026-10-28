@@ -477,7 +477,7 @@ COMMENT ON COLUMN role_page_permissions.created_at IS '记录创建时间，带�
 
 COMMENT ON TABLE role_page_permissions IS '角色页面授权：将角色与可访问页面关联，角色和页面共同构成主键。';
 
-COMMENT ON COLUMN roles.code IS '唯一角色编码；后端管理接口使用 super_admin 编码校验管理员身份。';
+COMMENT ON COLUMN roles.code IS '唯一角色编码；super_admin 放行全部功能，其他角色按页面授权校验。';
 
 COMMENT ON COLUMN roles.name IS '角色的中文显示名称。';
 
@@ -553,6 +553,7 @@ INSERT INTO pages (id, code, name, route_path, route_name, component_key, parent
 (gen_random_uuid(), 'dashboard', '工作台', '/dashboard', 'Dashboard', 'Dashboard', NULL, 'menu', 10, true, 'active', now(), now()),
 (gen_random_uuid(), 'knowledge_qa', '知识问答', '/qa', 'KnowledgeQA', 'KnowledgeQA', NULL, 'menu', 20, true, 'active', now(), now()),
 (gen_random_uuid(), 'knowledge_bases', '知识库管理', '/knowledge-bases', 'KnowledgeBaseManagement', 'KnowledgeBaseManagement', NULL, 'menu', 40, true, 'active', now(), now()),
+(gen_random_uuid(), 'document_create', '创建文档', '/create-document', 'DocumentCreate', 'DocumentCreate', NULL, 'menu', 45, true, 'active', now(), now()),
 (gen_random_uuid(), 'documents', '文档管理', '/documents', 'DocumentManagement', 'DocumentManagement', NULL, 'menu', 50, true, 'active', now(), now()),
 (gen_random_uuid(), 'robots', '机器人管理', '/robots', 'RobotManagement', 'RobotManagement', NULL, 'menu', 60, true, 'active', now(), now()),
 (gen_random_uuid(), 'users', '用户管理', '/users', 'UserManagement', 'UserManagement', NULL, 'menu', 70, true, 'active', now(), now()),

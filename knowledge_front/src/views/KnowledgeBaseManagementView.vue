@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Collection, Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
-import { api } from '../lib/session'
+import { api, session } from '../lib/session'
 import { queryParams } from '../lib/query'
 
 type KnowledgeBaseStatus = 'active' | 'disabled' | 'archived'
@@ -21,6 +21,7 @@ interface KnowledgeBase {
 interface KnowledgeBasePage { items: KnowledgeBase[]; total: number }
 
 const router = useRouter()
+const canManageDocuments = computed(() => session.pages.some(page => page.route_path === '/documents' && router.hasRoute(`page:${page.code}`)))
 const rows = ref<KnowledgeBase[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -115,7 +116,7 @@ async function saveBase() {
       ElMessage.success('知识库信息已更新')
     } else {
       await api<KnowledgeBase>('/knowledge-bases', { method: 'POST', body: JSON.stringify(body) })
-      ElMessage.success('知识库已创建，现在可以上传文档')
+      ElMessage.success(canManageDocuments.value ? '知识库已创建，现在可以上传文档' : '知识库已创建')
     }
     editorOpen.value = false
     await loadBases()
@@ -160,7 +161,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest })
       <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
       <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
       <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
-      <el-table-column label="操作" fixed="right" width="300"><template #default="{ row }"><el-button v-if="row.status === 'active'" link type="primary" @click="openDocuments(row)">管理文档</el-button><el-button link type="primary" :icon="Edit" :disabled="!!actionId" @click="openEditor(row)">编辑</el-button><el-button v-if="row.status !== 'archived'" link type="danger" :icon="Delete" :disabled="!!actionId" @click="archive(row)">归档</el-button></template></el-table-column>
+      <el-table-column label="操作" fixed="right" width="300"><template #default="{ row }"><el-button v-if="row.status === 'active' && canManageDocuments" link type="primary" @click="openDocuments(row)">管理文档</el-button><el-button link type="primary" :icon="Edit" :disabled="!!actionId" @click="openEditor(row)">编辑</el-button><el-button v-if="row.status !== 'archived'" link type="danger" :icon="Delete" :disabled="!!actionId" @click="archive(row)">归档</el-button></template></el-table-column>
       <template #empty><el-empty :description="filters.q || filters.status ? '没有找到匹配的知识库' : '暂无知识库，请先创建一个'" :image-size="80" /></template>
     </el-table>
     <div class="table-pagination"><span>共 {{ total }} 条记录</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[20, 50, 100]" :total="total" layout="sizes, prev, pager, next" @current-change="loadBases" @size-change="resizePage" /></div>

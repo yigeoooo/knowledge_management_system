@@ -115,3 +115,37 @@ test('audit log shows the operator name instead of their ID', async ({ page }) =
   await expect(page.locator('.el-table__body-wrapper')).toContainText('张三')
   await expect(page.locator('.el-table__body-wrapper')).not.toContainText('internal-user-uuid')
 })
+
+for (const path of ['/qa', '/qa-logs']) {
+  test(`${path} preserves Word citation styles, lists and tables safely`, async ({ page }) => {
+    const word = { ...source, filename: 'guide.docx', content: '红色斜体\n列表\n单元格', content_html:
+      '<p style="text-align:center"><span style="font-weight:700;font-style:italic;color:#ff0000">红色斜体</span></p><ol start="3"><li>列表</li></ol><table><tr><td colspan="2">单元格</td></tr></table><script>window.wordUnsafe=true</script><img src=x onerror="window.wordUnsafe=true"><a href="javascript:alert(1)">危险链接</a>' }
+    await page.route('**/api/v1/**', async route => {
+      const url = new URL(route.request().url()).pathname
+      const detail = { id: 'log', question: '格式测试', answer: '依据资料回答。[1]', sources: [word, pdfSource], status: 'SUCCESS', answer_status: 'answered', source_type: 'WEB', created_at: '2026-10-28T00:00:00Z', request_id: 'word-test' }
+      let data: unknown = detail
+      if (url.endsWith('/auth/refresh')) data = { access_token: 'test-token', user: { id: 'reader', display_name: 'Reader', role: 'user' }, pages: [qa, logs] }
+      else if (url.endsWith('/knowledge-bases')) data = { items: [{ id: 'base', name: '设备资料', status: 'active' }] }
+      else if (url.endsWith('/web/suggested-questions')) data = { questions: [], status: 'empty' }
+      else if (url.endsWith('/qa-logs')) data = { items: [detail], total: 1 }
+      await route.fulfill({ json: { code: 0, data } })
+    })
+    await page.goto(path)
+    if (path === '/qa') {
+      await page.getByRole('textbox', { name: '你的问题' }).fill('格式测试')
+      await page.getByRole('button', { name: '发送问题' }).click()
+    } else {
+      await page.getByRole('button', { name: '查看详情' }).click()
+    }
+    const rich = page.locator('.word-content')
+    await expect(rich.locator('p')).toHaveCSS('text-align', 'center')
+    await expect(rich.locator('span')).toHaveCSS('font-weight', '700')
+    await expect(rich.locator('span')).toHaveCSS('font-style', 'italic')
+    await expect(rich.locator('span')).toHaveCSS('color', 'rgb(255, 0, 0)')
+    await expect(rich.locator('ol')).toHaveAttribute('start', '3')
+    await expect(rich.locator('td')).toHaveAttribute('colspan', '2')
+    await expect(rich.locator('script, img, [onerror], [href^="javascript:"]')).toHaveCount(0)
+    expect(await page.evaluate(() => (window as unknown as { wordUnsafe?: boolean }).wordUnsafe)).toBeUndefined()
+    await expect(page.locator('.source-plain-text')).toHaveText(pdfSource.content)
+  })
+}

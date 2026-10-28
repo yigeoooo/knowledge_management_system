@@ -7,11 +7,10 @@ from flask import Blueprint, g, request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from .auth import password_hasher
+from .auth import page_required, password_hasher
 from .extensions import db
 from .http import ApiError, status_filter, success
 from .models import AuditLog, Role, User, UserSession, now
-from .workspace import admin_only
 
 users = Blueprint("users", __name__, url_prefix="/api/v1/users")
 EDITABLE_FIELDS = {"username", "display_name", "role_id", "status", "password"}
@@ -146,7 +145,7 @@ def protected_change(user, values):
 
 
 @users.get("")
-@admin_only
+@page_required("/users")
 def list_users():
     try:
         page = int(request.args.get("page", "1"))
@@ -183,7 +182,7 @@ def list_users():
 
 
 @users.get("/role-options")
-@admin_only
+@page_required("/users")
 def role_options():
     roles = db.session.scalars(db.select(Role).order_by(Role.created_at, Role.id)).all()
     return success(
@@ -196,13 +195,13 @@ def role_options():
 
 
 @users.get("/<uuid:user_id>")
-@admin_only
+@page_required("/users")
 def user_detail(user_id):
     return success(user_data(find_user(user_id)))
 
 
 @users.post("")
-@admin_only
+@page_required("/users")
 def create_user():
     values = validated_input(creating=True)
     ensure_unique_username(values["username"])
@@ -224,7 +223,7 @@ def create_user():
 
 
 @users.put("/<uuid:user_id>")
-@admin_only
+@page_required("/users")
 def update_user(user_id):
     user = find_user(user_id, lock=True)
     values = validated_input(current=user)
@@ -256,7 +255,7 @@ def update_user(user_id):
 
 
 @users.delete("/<uuid:user_id>")
-@admin_only
+@page_required("/users")
 def delete_user(user_id):
     user = find_user(user_id, lock=True)
     if user.username == "root" or user.id == g.user.id:

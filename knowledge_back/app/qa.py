@@ -10,7 +10,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
-from .auth import authenticated
+from .auth import page_required
 from .chat import ChatError
 from .embedding import EmbeddingError
 from .extensions import db, limiter
@@ -132,7 +132,7 @@ def _suggestion_anchor(token, user_id, base_id, question):
 
 
 @qa.post("/web/suggested-questions")
-@authenticated
+@page_required("/qa")
 @limiter.limit("12 per minute", key_func=lambda: str(g.user.id))
 def suggested_questions():
     body = _body({"knowledge_base_id"})
@@ -256,7 +256,7 @@ def _log_response(log):
 
 
 @qa.post("/web/query")
-@authenticated
+@page_required("/qa")
 @limiter.limit("20 per minute", key_func=lambda: str(g.user.id))
 def query():
     body = _body({"knowledge_base_id", "question", "request_id", "suggestion_token"})

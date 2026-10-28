@@ -6,10 +6,10 @@ from flask import Blueprint, g, request
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
+from .auth import page_required
 from .extensions import db
 from .http import ApiError, status_filter, success
 from .models import AuditLog, Robot
-from .workspace import admin_only
 
 robots = Blueprint("robots", __name__, url_prefix="/api/v1/robots")
 ROBOT_STATUSES = {"active", "disabled"}
@@ -112,7 +112,7 @@ def commit_robot_change():
 
 
 @robots.get("")
-@admin_only
+@page_required("/robots")
 def list_robots():
     try:
         page = int(request.args.get("page", "1"))
@@ -154,13 +154,13 @@ def list_robots():
 
 
 @robots.get("/<uuid:robot_id>")
-@admin_only
+@page_required("/robots")
 def robot_detail(robot_id):
     return success(robot_data(find_robot(robot_id)))
 
 
 @robots.post("")
-@admin_only
+@page_required("/robots")
 def create_robot():
     values = validated_input(creating=True)
     ensure_unique_serial(values["serial_no"])
@@ -176,7 +176,7 @@ def create_robot():
 
 
 @robots.put("/<uuid:robot_id>")
-@admin_only
+@page_required("/robots")
 def update_robot(robot_id):
     robot = find_robot(robot_id, lock=True)
     values = validated_input()
@@ -196,7 +196,7 @@ def update_robot(robot_id):
 
 
 @robots.delete("/<uuid:robot_id>")
-@admin_only
+@page_required("/robots")
 def disable_robot(robot_id):
     robot = find_robot(robot_id, lock=True)
     if robot.status != "disabled":

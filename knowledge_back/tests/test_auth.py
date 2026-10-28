@@ -17,6 +17,7 @@ def test_login_returns_current_user_and_allowed_pages(client):
         "/profile",
         "/knowledge-bases",
         "/documents",
+        "/create-document",
         "/robots",
         "/users",
         "/roles",
@@ -102,7 +103,7 @@ def test_root_has_all_pages_and_management_lists_exclude_credentials(app, client
     headers = {"Authorization": f"Bearer {result['access_token']}"}
     pages = client.get("/api/v1/pages", headers=headers)
     assert pages.status_code == 200
-    assert len(result["pages"]) == pages.get_json()["data"]["total"] == 12
+    assert len(result["pages"]) == pages.get_json()["data"]["total"] == 13
     users = client.get("/api/v1/users", headers=headers)
     assert users.status_code == 200
     assert "password" not in users.get_data(as_text=True)

@@ -5,13 +5,13 @@ from uuid import UUID
 
 from flask import Blueprint, current_app, request
 
-from .auth import authenticated
+from .auth import page_required
 from .embedding import EmbeddingError, embed_query
 from .extensions import db
 from .http import ApiError, success
 from .models import Document, DocumentChunk, DocumentVersion, KnowledgeBase
 from .pdf_text import readable_source
-from .storage import StorageError, presign_get
+from .storage import StorageError, presign_get, read_object
 
 retrieval = Blueprint("retrieval", __name__, url_prefix="/api/v1")
 
@@ -90,9 +90,33 @@ def source_from_row(chunk, version, document, score=None):
 def with_preview_urls(sources):
     """Generate fresh media links at response time; never persist signed URLs in logs."""
     result = []
+    word_versions = {}
     for original in sources:
         source = readable_source(original)
         result.append(source)
+        if str(source.get("filename", "")).lower().endswith(".docx") and source.get("content"):
+            # Derived for display only. Grounding and saved evidence keep the
+            # original text; historical views use the original version UUID.
+            source.pop("content_html", None)
+            try:
+                version_id = UUID(str(source.get("version_id")))
+                version = db.session.get(DocumentVersion, version_id)
+                if (version is None or not version.filename.lower().endswith(".docx")
+                        or str(version.document_id) != source.get("document_id")):
+                    continue
+                from .docx_preview import citation_html, docx_html
+
+                if version_id not in word_versions:
+                    word_versions[version_id] = None
+                    payload = read_object(version.minio_object_key, bucket=version.minio_bucket,
+                                          max_size=current_app.config["MAX_DOCUMENT_SIZE"])
+                    word_versions[version_id] = docx_html(payload)
+                rendered = word_versions[version_id]
+                if rendered and (fragment := citation_html(rendered, source["content"])):
+                    source["content_html"] = fragment
+            except (StorageError, ApiError, ValueError, TypeError, KeyError):
+                # Storage loss must not make a previously saved answer unreadable.
+                pass
         if source.get("modality") not in {"image", "video"}:
             continue
         version = db.session.get(DocumentVersion, UUID(source["version_id"]))
@@ -141,7 +165,7 @@ def search_sources(knowledge_base_id, question, *, top_k=15):
 
 
 @retrieval.post("/web/search")
-@authenticated
+@page_required("/qa")
 def vector_search():
     body = request.get_json(silent=True)
     allowed = {"knowledge_base_id", "question", "top_k"}

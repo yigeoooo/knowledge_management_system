@@ -1,5 +1,4 @@
 from datetime import datetime
-from functools import wraps
 from uuid import UUID
 
 from flask import Blueprint, g, request
@@ -7,7 +6,13 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
-from .auth import authenticated
+from .auth import (
+    accessible_pages,
+    authenticated,
+    has_page_access,
+    page_required,
+    require_page_access,
+)
 from .extensions import db
 from .http import ApiError, status_filter, success
 from .models import (
@@ -21,21 +26,10 @@ from .models import (
     RolePagePermission,
     User,
 )
-from .pdf_text import readable_answer, readable_source
+from .pdf_text import readable_answer
 from .storage import StorageError, ensure_bucket, knowledge_base_bucket
 
 workspace = Blueprint("workspace", __name__, url_prefix="/api/v1")
-
-
-def admin_only(view):
-    @authenticated
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if g.user.role.code != "super_admin":
-            raise ApiError("没有访问此功能的权限", 403, 40301)
-        return view(*args, **kwargs)
-
-    return wrapped
 
 
 def serialized(row, fields):
@@ -178,10 +172,14 @@ def _record_knowledge_base_action(action, base, detail):
 
 
 @workspace.get("/<resource>")
-@admin_only
+@authenticated
 def resource_list(resource):
     if resource not in RESOURCES:
         raise ApiError("资源不存在", 404, 40401)
+    if resource == "pages":
+        require_page_access("/pages", "/role-permissions")
+    else:
+        require_page_access(f"/{resource}")
     model, fields, search_field = RESOURCES[resource]
     page = request.args.get("page", 1, type=int)
     size = request.args.get("page_size", 20, type=int)
@@ -209,10 +207,11 @@ def resource_list(resource):
 
 
 def _qa_log_data(log):
+    from .retrieval import with_preview_urls
     knowledge_base = db.session.get(KnowledgeBase, log.knowledge_base_id)
     user = db.session.get(User, log.user_id) if log.user_id else None
     robot = db.session.get(Robot, log.robot_id) if log.robot_id else None
-    sources = [readable_source(source) for source in log.sources] if isinstance(log.sources, list) else []
+    sources = with_preview_urls(log.sources) if isinstance(log.sources, list) else []
     return {
         "id": str(log.id),
         "request_id": log.request_id,
@@ -238,7 +237,7 @@ def _qa_log_data(log):
 
 
 @workspace.get("/qa-logs/<uuid:log_id>")
-@admin_only
+@page_required("/qa-logs")
 def qa_log_detail(log_id):
     log = db.session.get(QALog, log_id)
     if log is None:
@@ -247,10 +246,16 @@ def qa_log_detail(log_id):
 
 
 @workspace.get("/roles/<uuid:role_id>/pages")
-@admin_only
+@page_required("/role-permissions")
 def role_pages(role_id):
-    if db.session.get(Role, role_id) is None:
+    role = db.session.get(Role, role_id)
+    if role is None:
         raise ApiError("角色不存在", 404, 40401)
+    if role.code == "super_admin":
+        ids = db.session.scalars(
+            db.select(Page.id).where(Page.status == "active").order_by(Page.sort_order, Page.id)
+        ).all()
+        return success({"page_ids": [str(page_id) for page_id in ids]})
     ids = db.session.scalars(
         db.select(RolePagePermission.page_id)
         .join(Page, Page.id == RolePagePermission.page_id)
@@ -296,7 +301,7 @@ def _role_page_ids():
 
 
 @workspace.put("/roles/<uuid:role_id>/pages")
-@admin_only
+@page_required("/role-permissions")
 def update_role_pages(role_id):
     role = db.session.scalar(
         db.select(Role)
@@ -368,11 +373,11 @@ def update_role_pages(role_id):
 
 
 @workspace.get("/knowledge-bases")
-@authenticated
+@page_required("/knowledge-bases", "/documents", "/create-document", "/qa")
 def knowledge_bases():
-    # 管理员需要查看全部状态；普通用户和问答客户端只能看到可用知识库。
-    is_admin = g.user.role.code == "super_admin"
-    if not is_admin:
+    # 获得知识库管理权限的角色可查看全部状态；其他客户端只读取可用知识库。
+    can_manage = has_page_access("/knowledge-bases")
+    if not can_manage:
         bases = db.session.scalars(
             db.select(KnowledgeBase)
             .where(KnowledgeBase.status == "active")
@@ -420,16 +425,16 @@ def knowledge_bases():
 
 
 @workspace.get("/knowledge-bases/<uuid:knowledge_base_id>")
-@authenticated
+@page_required("/knowledge-bases", "/documents", "/create-document", "/qa")
 def knowledge_base_detail(knowledge_base_id):
     base = _find_knowledge_base(knowledge_base_id)
-    if g.user.role.code != "super_admin" and base.status != "active":
+    if not has_page_access("/knowledge-bases") and base.status != "active":
         raise ApiError("知识库不存在", 404, 40401)
     return success(_knowledge_base_data(base))
 
 
 @workspace.post("/knowledge-bases")
-@admin_only
+@page_required("/knowledge-bases")
 def create_knowledge_base():
     values = _validated_knowledge_base_input(creating=True)
     _ensure_unique_knowledge_base_code(values["code"])
@@ -458,7 +463,7 @@ def create_knowledge_base():
 
 
 @workspace.put("/knowledge-bases/<uuid:knowledge_base_id>")
-@admin_only
+@page_required("/knowledge-bases")
 def update_knowledge_base(knowledge_base_id):
     base = _find_knowledge_base(knowledge_base_id, lock=True)
     values = _validated_knowledge_base_input()
@@ -482,7 +487,7 @@ def update_knowledge_base(knowledge_base_id):
 
 
 @workspace.delete("/knowledge-bases/<uuid:knowledge_base_id>")
-@admin_only
+@page_required("/knowledge-bases")
 def archive_knowledge_base(knowledge_base_id):
     base = _find_knowledge_base(knowledge_base_id, lock=True)
     if base.status != "archived":
@@ -496,20 +501,9 @@ def archive_knowledge_base(knowledge_base_id):
 
 
 @workspace.get("/dashboard")
-@authenticated
+@page_required("/dashboard")
 def dashboard():
-    paths = set(db.session.scalars(
-        db.select(Page.route_path)
-        .join(RolePagePermission)
-        .where(
-            RolePagePermission.role_id == g.user.role_id,
-            RolePagePermission.can_view.is_(True),
-            Page.status == "active",
-            Page.page_type != "button",
-        )
-    ))
-    if "/dashboard" not in paths:
-        raise ApiError("没有访问此功能的权限", 403, 40301)
+    paths = {page.route_path for page in accessible_pages(g.user)}
     metrics = [
         ("knowledge_base_count", "/knowledge-bases", KnowledgeBase,
          [KnowledgeBase.status == "active"]),
