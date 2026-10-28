@@ -195,15 +195,15 @@ knowledge_base 状态为 active
 
 处理流程：
 
-1. 校验请求格式和问题长度。
+1. 校验 JSON 请求格式和机器人序列号。
 2. 根据 `serial_no` 查询机器人。
 3. 检查机器人存在且状态为 `active`。
-4. 根据 `knowledge_base_code` 查询知识库。
+4. 校验问题长度、请求编号及知识库编码，根据 `knowledge_base_code` 查询知识库。
 5. 检查知识库存在且状态为 `active`。
 6. 使用知识库内部 UUID 作为向量查询过滤条件。
 7. 检索、重排、调用大语言模型并生成答案。
 8. 返回答案和来源。
-9. 写入 `qa_logs`，其中 `source_type = ROBOT`。
+9. 写入 `qa_logs`，其中 `source_type = ROBOT`、`robot_id` 为机器人 ID、`user_id` 为空；更新机器人的 `last_request_at`。
 
 机器人请求不使用网页用户的登录 Token。
 
@@ -663,12 +663,15 @@ PDF 文本在索引、检索来源序列化及历史问答展示时统一清理�
   "serial_no": "ROBOT-001",
   "knowledge_base_code": "product_manual",
   "question": "设备如何安装？",
-  "top_k": 5,
   "request_id": "robot-req-001"
 }
 ```
 
-响应中的 `sources` 至少包含文档 ID、文件名、版本、标题路径和相关文本片段，方便网页展示引用来源。
+完整路径为 `POST /api/v1/robot/query`，请求头为 `Content-Type: application/json`，不需要 `Authorization`。四个字段均必填：`serial_no`、`knowledge_base_code` 为 1–100 个字符，`question` 为 1–2000 个字符，`request_id` 为 1–100 位字母、数字或 `._-`。当前与网页问答共用检索、生成和审阅逻辑，单轮非流式，不接受 `top_k`、`stream`、历史消息或网页推荐凭据。
+
+成功响应与 `/web/query` 一致，`data` 包含 `request_id`、知识库 UUID、问题、`answer`、`answer_status`、`sources`、`model`、`latency_ms`。响应中的 `sources` 包含文档 ID、文件名、版本、标题路径和相关片段；Word 引用同样保留格式。日志关联机器人，历史详情可查看机器人名称和序列号。
+
+未注册或停用机器人返回 HTTP 403 / `43001`；知识库不存在或停用返回 HTTP 404 / `43002`。拒绝请求不会进入检索或模型调用。相同机器人、知识库、问题和请求编号重试复用已完成结果；不同机器人、网页用户或不同问题占用同一编号时返回 `40901`，处理中返回 `40902`，引用已失效返回 `40903`。重试时仍重新验证机器人是否启用。每 IP 每分钟最多 60 次，每台已注册机器人每分钟最多 20 次，超出返回 HTTP 429。接口复用现有表，无需数据库迁移。
 
 ### 7.8 统一错误码
 

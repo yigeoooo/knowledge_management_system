@@ -304,6 +304,27 @@ Worker 从 MinIO 读取文件。Markdown、TXT、PDF 和 DOCX 会提取文本、
 
 机器人管理已接入注册、详情、编辑、启用／停用、分页搜索、状态筛选和审计；删除接口采用停用语义以保留问答日志中的机器人关联。知识库管理已接入 CRUD、状态控制、审计和独立 MinIO Bucket；文档管理已接入 MinIO 对象存储、版本、预览、下载、在线 Markdown/TXT/DOCX 编辑、PDF/DOCX 文本提取和 PostgreSQL 索引任务。生产环境可以继续使用独立的 `uv run flask --app app index-worker` 进程作为任务恢复和扩展吞吐的 Worker。
 
+### 机器人问答接口
+
+`POST /api/v1/robot/query` 接收 JSON，不需要用户登录 Token。先校验 `serial_no` 对应机器人已注册且启用，再按 `knowledge_base_code` 查找启用的知识库，随后复用网页问答的检索、答案生成、依据审阅和引用展示流程。
+
+```bash
+curl -X POST 'http://127.0.0.1:5000/api/v1/robot/query' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "serial_no": "ROBOT-001",
+    "knowledge_base_code": "product_manual",
+    "question": "设备如何安装？",
+    "request_id": "robot-req-001"
+  }'
+```
+
+四个字段均必填：`serial_no`、`knowledge_base_code` 为 1–100 个字符，`question` 为 1–2000 个字符，`request_id` 为 1–100 位字母、数字或 `._-`，建议使用 UUID。与网页问答一样采用单轮非流式回答，不接受 `top_k`、`stream` 或历史消息。客户端超时建议设为 300 秒。
+
+成功响应与网页问答一致，`data.answer` 是答案，`data.sources` 是引用，`data.answer_status` 区分完整回答、部分回答、依据不足和仅返回资料。请求写入问答记录并标记 `source_type=ROBOT`、关联机器人，同时更新机器人的最近请求时间。相同机器人、知识库、问题和请求编号可重试并复用已完成结果；跨机器人、跨网页用户或不同问题复用编号返回 `40901`。每次重试仍需通过机器人状态校验。
+
+未注册或停用返回 HTTP 403 / `43001`，知识库不存在或停用返回 HTTP 404 / `43002`，参数错误返回 HTTP 422 / `42201`。限流为每 IP 每分钟 60 次、每台已注册机器人每分钟 20 次，超过返回 HTTP 429。接口复用现有表，无需数据库迁移；更新代码后重启后端生效。
+
 ## 7. 常见问题
 
 - **首页可以打开，登录提示连接失败**：确认后端已经在 `127.0.0.1:5000` 启动，并检查 Vite 代理目标。

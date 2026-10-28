@@ -16,7 +16,7 @@ from .embedding import EmbeddingError
 from .extensions import db, limiter
 from .grounding import NO_EVIDENCE, generate_answer, generate_suggestions
 from .http import ApiError, success
-from .models import DocumentChunk, QALog, now
+from .models import DocumentChunk, KnowledgeBase, QALog, Robot, now
 from .pdf_text import readable_answer
 from .qa_retrieval import retrieve_for_answer
 from .retrieval import (
@@ -25,6 +25,7 @@ from .retrieval import (
     validate_question,
     with_preview_urls,
 )
+from .robots import valid_text
 
 qa = Blueprint("qa", __name__, url_prefix="/api/v1")
 
@@ -34,6 +35,12 @@ def _body(allowed):
     if not isinstance(body, dict) or set(body) - allowed:
         raise ApiError("请求参数不正确", 422)
     return body
+
+
+def _request_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", value):
+        raise ApiError("请提供 1–100 位字母、数字或 ._- 组成的请求编号", 422)
+    return value
 
 
 def _normalized(value):
@@ -165,14 +172,16 @@ def suggested_questions():
         raise ApiError(str(error), 503, 50002) from None
 
 
-def _claim_request(request_id, user_id, base_id, question):
+def _claim_request(request_id, user_id, base_id, question, *, robot_id=None):
+    source_type = "ROBOT" if robot_id is not None else "WEB"
     log = db.session.scalar(db.select(QALog).where(QALog.request_id == request_id))
     if log is None:
         log = QALog(
             id=uuid4(),
             request_id=request_id,
-            source_type="WEB",
+            source_type=source_type,
             user_id=user_id,
+            robot_id=robot_id,
             knowledge_base_id=base_id,
             question=question,
             status="PROCESSING",
@@ -190,7 +199,8 @@ def _claim_request(request_id, user_id, base_id, question):
                 raise
     if (
         log.user_id != user_id
-        or log.source_type != "WEB"
+        or log.robot_id != robot_id
+        or log.source_type != source_type
         or log.knowledge_base_id != base_id
         or log.question != question
     ):
@@ -261,12 +271,48 @@ def _log_response(log):
 def query():
     body = _body({"knowledge_base_id", "question", "request_id", "suggestion_token"})
     question = validate_question(body.get("question"))
-    request_id = body.get("request_id")
-    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request_id):
-        raise ApiError("请提供 1–100 位字母、数字或 ._- 组成的请求编号", 422)
+    request_id = _request_id(body.get("request_id"))
     base_id = require_knowledge_base(body.get("knowledge_base_id")).id
     anchor_id = _suggestion_anchor(body.get("suggestion_token"), g.user.id, base_id, question)
-    log, claimed = _claim_request(request_id, g.user.id, base_id, question)
+    return _answer_question(request_id, base_id, question, user_id=g.user.id, anchor_id=anchor_id)
+
+
+@qa.post("/robot/query")
+@limiter.limit("60 per minute")
+def robot_query():
+    body = _body({"serial_no", "knowledge_base_code", "question", "request_id"})
+    serial_no = valid_text(body.get("serial_no"), "机器人序列号", 100)
+    robot = db.session.scalar(db.select(Robot).where(Robot.serial_no == serial_no))
+    if robot is None or robot.status != "active":
+        raise ApiError("机器人未注册或已停用", 403, 43001)
+    robot_id = robot.id
+    g.robot_id = robot_id
+    with limiter.limit("20 per minute", key_func=lambda: str(g.robot_id)):
+        question = validate_question(body.get("question"))
+        request_id = _request_id(body.get("request_id"))
+        code = valid_text(body.get("knowledge_base_code"), "知识库编码", 100)
+        base = db.session.scalar(db.select(KnowledgeBase).where(KnowledgeBase.code == code))
+        if base is None or base.status != "active":
+            raise ApiError("知识库不存在或已停用", 404, 43002)
+        base_id = base.id
+        # Recheck identity and status while updating, then release the row before
+        # retrieval/model calls so administrators can still manage the robot.
+        updated = db.session.execute(
+            db.update(Robot)
+            .where(Robot.id == robot_id, Robot.serial_no == serial_no, Robot.status == "active")
+            .values(last_request_at=now())
+            .execution_options(synchronize_session=False)
+        )
+        if updated.rowcount != 1:
+            db.session.rollback()
+            raise ApiError("机器人未注册或已停用", 403, 43001)
+        db.session.commit()
+        return _answer_question(request_id, base_id, question, robot_id=robot_id)
+
+
+def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=None, anchor_id=None):
+    """Use the same retrieval, grounding and retry handling for both callers."""
+    log, claimed = _claim_request(request_id, user_id, base_id, question, robot_id=robot_id)
     if not claimed:
         return _log_response(log)
     log_id, lease = log.id, log.updated_at
