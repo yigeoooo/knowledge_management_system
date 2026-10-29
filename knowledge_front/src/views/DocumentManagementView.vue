@@ -3,6 +3,8 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, r
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import type { JSONContent } from "@tiptap/core";
 const WordEditor = defineAsyncComponent(() => import("../components/WordEditor.vue"));
+const ExcelEditor = defineAsyncComponent(() => import("../components/ExcelEditor.vue"));
+import type { ExcelWorkbook } from "../components/ExcelEditor.vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Download,
@@ -98,23 +100,36 @@ const selectedVersionId = ref("");
 const previewText = ref("");
 const previewHtml = ref("");
 const previewUrl = ref("");
-const previewKind = ref<"text" | "image" | "video" | "pdf" | "download">("text");
+const previewKind = ref<"text" | "image" | "video" | "pdf" | "excel" | "download">("text");
 const editing = ref(false);
 const editorText = ref("");
 const editorBusy = ref(false);
 const wordContent = ref<JSONContent>({ type: "doc", content: [] });
+const emptyWorkbook = (): ExcelWorkbook => ({ sheets: [{ id: "sheet1", name: "Sheet1", row_count: 100, column_count: 26, cells: {} }], active_sheet: "sheet1" });
+const excelWorkbook = ref<ExcelWorkbook>(emptyWorkbook());
+const excelLatest = ref<ExcelWorkbook>(excelWorkbook.value);
+const excelEditor = ref<{ snapshot(): ExcelWorkbook } | null>(null);
 const editBaseId = ref("");
 const editBaseline = ref("");
 const wordReady = ref(false);
+const excelReady = ref(false);
 let saveAttempt: { payload: string; id: string } | null = null;
 const isWord = computed(() => extension(selectedVersion.value?.filename || "") === ".docx");
-const canEdit = computed(() => isText.value || isWord.value);
+const isExcel = computed(() => [".xls", ".xlsx"].includes(extension(selectedVersion.value?.filename || "")));
+const canEdit = computed(() => isText.value || isWord.value || isExcel.value);
 const dirty = computed(() => editing.value && (isWord.value
   ? JSON.stringify(wordContent.value) !== editBaseline.value
-  : editorText.value !== previewText.value));
+  : isExcel.value ? JSON.stringify(excelLatest.value) !== editBaseline.value : editorText.value !== previewText.value));
 function updateWord(content: JSONContent) {
   wordContent.value = content;
   if (!wordReady.value) { editBaseline.value = JSON.stringify(content); wordReady.value = true; }
+}
+function updateExcel(workbook: ExcelWorkbook) {
+  excelLatest.value = workbook;
+  if (!excelReady.value) {
+    editBaseline.value = JSON.stringify(workbook);
+    excelReady.value = true;
+  }
 }
 async function discardEdits() {
   if (editorBusy.value) return false;
@@ -419,6 +434,13 @@ async function loadVersionContent() {
       previewText.value = res.content;
       previewHtml.value = res.html || "";
       previewKind.value = "text";
+    } else if ([".xls", ".xlsx"].includes(extension(version.filename))) {
+      const res = await api<{ workbook: ExcelWorkbook }>(
+        `/documents/${detail.value.id}/excel-content?version_id=${version.id}`
+      );
+      excelWorkbook.value = res.workbook;
+      excelLatest.value = res.workbook;
+      previewKind.value = "excel";
     } else if (
       [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm", ".mov"].includes(
         extension(version.filename)
@@ -477,6 +499,12 @@ async function beginEdit() {
       wordContent.value = result.content;
       editBaseline.value = JSON.stringify(result.content);
       wordReady.value = false;
+    } else if (isExcel.value) {
+      const result = await api<{ workbook: ExcelWorkbook }>(`/documents/${detail.value.id}/excel-content?version_id=${editBaseId.value}`);
+      excelWorkbook.value = result.workbook;
+      excelLatest.value = result.workbook;
+      editBaseline.value = JSON.stringify(result.workbook);
+      excelReady.value = false;
     } else {
       editorText.value = previewText.value;
     }
@@ -497,6 +525,15 @@ async function saveEdit(): Promise<boolean> {
       const payload = JSON.stringify(body);
       if (!saveAttempt || saveAttempt.payload !== payload) saveAttempt = { payload, id: crypto.randomUUID() };
       const result = await api<{ version: Version }>(`/documents/${detail.value.id}/word-content`, {
+        method: "POST", body: JSON.stringify({ ...body, request_id: saveAttempt.id }), timeoutMs: 120000,
+      });
+      versionId = result.version.id;
+    } else if (isExcel.value) {
+      excelLatest.value = excelEditor.value?.snapshot() || excelLatest.value;
+      const body = { base_version_id: editBaseId.value, workbook: excelLatest.value };
+      const payload = JSON.stringify(body);
+      if (!saveAttempt || saveAttempt.payload !== payload) saveAttempt = { payload, id: crypto.randomUUID() };
+      const result = await api<{ version: Version }>(`/documents/${detail.value.id}/excel-content`, {
         method: "POST", body: JSON.stringify({ ...body, request_id: saveAttempt.id }), timeoutMs: 120000,
       });
       versionId = result.version.id;
@@ -641,7 +678,7 @@ onBeforeUnmount(stopIndexPolling);
 
   <el-alert
     class="phase-notice"
-    title="支持 Markdown、TXT 和 DOCX 在线编辑，保存后生成新版本；其他文件可预览、下载并上传新版本。"
+    title="支持 Markdown、TXT、DOCX 和 Excel 在线编辑，保存后生成新版本；其他文件可预览、下载并上传新版本。"
     type="info"
     :closable="false"
     show-icon
@@ -864,7 +901,7 @@ onBeforeUnmount(stopIndexPolling);
         <input
           ref="fileInput"
           type="file"
-          accept=".md,.markdown,.txt,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
+          accept=".md,.markdown,.txt,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseFile"
         />
         <div class="form-tip">单文件最大 {{ formatSize(maxFileSize) }}，文件上传后进入索引任务。</div>
@@ -913,10 +950,10 @@ onBeforeUnmount(stopIndexPolling);
         <input
           ref="replacementInput"
           type="file"
-          accept=".md,.markdown,.txt,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
+          accept=".md,.markdown,.txt,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseReplacementFile"
         />
-        <div class="form-tip">支持 Markdown、TXT、PDF、Word、图片和视频，单文件最大 {{ formatSize(maxFileSize) }}。</div>
+        <div class="form-tip">支持 Markdown、TXT、PDF、Word、Excel、图片和视频，单文件最大 {{ formatSize(maxFileSize) }}。</div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -1004,6 +1041,11 @@ onBeforeUnmount(stopIndexPolling);
         <WordEditor :key="editBaseId" :content="wordContent" :title="detail.title"
           :disabled="editorBusy" :save-document="saveEdit" @change="updateWord" />
       </section>
+      <section v-else-if="editing && isExcel" class="excel-edit-panel">
+        <p>编辑 Excel 工作簿，保存为新版本。原版本可在版本历史中下载。</p>
+        <ExcelEditor ref="excelEditor" :key="editBaseId" :workbook="excelWorkbook" :title="detail.title" :disabled="editorBusy" @change="updateExcel" />
+        <div class="excel-edit-actions"><el-button type="primary" :loading="editorBusy" @click="saveEdit">保存 Excel 新版本</el-button></div>
+      </section>
       <div
         v-else-if="editing"
         class="editor-layout"
@@ -1029,6 +1071,9 @@ onBeforeUnmount(stopIndexPolling);
         class="markdown-body document-preview"
         v-html="renderedPreviewHtml"
       ></div>
+      <section v-else-if="previewKind === 'excel'" class="excel-preview">
+        <ExcelEditor :workbook="excelWorkbook" :title="detail.title" readonly />
+      </section>
       <img
         v-else-if="previewKind === 'image'"
         class="file-preview-image"

@@ -38,6 +38,8 @@ ALLOWED_EXTENSIONS = {
     ".pdf",
     ".doc",
     ".docx",
+    ".xls",
+    ".xlsx",
     ".png",
     ".jpg",
     ".jpeg",
@@ -50,7 +52,8 @@ ALLOWED_EXTENSIONS = {
     ".avi",
 }
 TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
-PREVIEWABLE_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm", ".mov"}
+EXCEL_EXTENSIONS = {".xls", ".xlsx"}
+PREVIEWABLE_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm", ".mov"} | EXCEL_EXTENSIONS
 CONTENT_TYPES = {
     ".md": "text/markdown",
     ".markdown": "text/markdown",
@@ -58,6 +61,8 @@ CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -114,7 +119,7 @@ def _filename(value):
     if not value or value.startswith(".") and value.count(".") == 1:
         raise ApiError("文件名不正确", 422)
     if PurePath(value).suffix.lower() not in ALLOWED_EXTENSIONS:
-        raise ApiError("文件类型不受支持，请上传 Markdown、PDF、Word、图片或视频文件", 422, 42202)
+        raise ApiError("文件类型不受支持，请上传 Markdown、PDF、Word、Excel、图片或视频文件", 422, 42202)
     return value
 
 
@@ -458,6 +463,15 @@ def _complete_version(version):
             content.decode("utf-8-sig")
         except UnicodeDecodeError:
             raise ApiError("文本文件必须使用 UTF-8 编码", 422, 42202) from None
+    elif PurePath(version.filename).suffix.lower() in EXCEL_EXTENSIONS:
+        try:
+            from .excel_authoring import parse_workbook
+
+            parse_workbook(version.filename, content)
+        except ApiError:
+            raise
+        except (RuntimeError, ValueError, TypeError) as error:
+            raise ApiError("Excel 文件格式无效或已损坏", 422, 42202) from error
     version.content_hash = hashlib.sha256(content).hexdigest()
     version.status = "UPLOADED"
     version.error_message = None
@@ -479,6 +493,8 @@ def create_document():
     document_id = _uuid(body["request_id"], "请求编号")
     title = _text(body["title"], "文档标题", 200)
     format_name = body["format"]
+    if format_name not in {"md", "docx", "xlsx"}:
+        raise ApiError("文档格式只能为 Markdown、Word 或 Excel", 422, 42202)
     content = document_bytes(format_name, body["content"])
     if len(content) > _max_document_size():
         raise ApiError("文档超过允许保存的大小", 422, 42202)
@@ -724,6 +740,135 @@ def save_word_content(document_id):
     return success({"document": _document_data(document), "version": _version_data(version)}), 201
 
 
+def _excel_version(document_id, version_id):
+    if not version_id:
+        raise ApiError("文档还没有可读取的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document_id)
+    if PurePath(version.filename).suffix.lower() not in EXCEL_EXTENSIONS:
+        raise ApiError("在线 Excel 编辑仅支持 XLS 或 XLSX 文件", 422, 42202)
+    if version.status in {"PENDING_UPLOAD", "ARCHIVED"}:
+        raise ApiError("该版本尚未上传完成或已归档", 409, 40901)
+    return version
+
+
+@documents.get("/documents/<uuid:document_id>/excel-content")
+@page_required("/documents")
+def get_excel_content(document_id):
+    from .excel_authoring import parse_workbook
+
+    document = _find_document(document_id)
+    _find_knowledge_base(document.knowledge_base_id)
+    version = _excel_version(document.id, request.args.get("version_id") or document.current_version_id)
+    content = _api_storage(
+        read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size()
+    )
+    try:
+        workbook = parse_workbook(version.filename, content)
+    except (RuntimeError, ValueError, TypeError) as error:
+        raise ApiError("Excel 文件格式解析失败，请下载原文件查看", 422, 42202) from error
+    return success({"version": _version_data(version), "workbook": workbook})
+
+
+@documents.post("/documents/<uuid:document_id>/excel-content")
+@page_required("/documents")
+def save_excel_content(document_id):
+    import json
+
+    from .excel_authoring import workbook_bytes
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"base_version_id", "workbook", "request_id"}:
+        raise ApiError("请提供基础版本、Excel 工作簿和请求编号", 422)
+    base_id = _uuid(body["base_version_id"], "基础版本 ID")
+    version_id = _uuid(body["request_id"], "请求编号")
+    document = _find_document(document_id, lock=True)
+    _find_knowledge_base(document.knowledge_base_id)
+    draft_hash = hashlib.sha256(
+        json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    existing = db.session.get(DocumentVersion, version_id)
+    if existing:
+        audit = db.session.scalar(
+            db.select(AuditLog).where(
+                AuditLog.resource_id == document.id,
+                AuditLog.action == "document.excel.edit",
+                AuditLog.detail["version_id"].as_string() == str(version_id),
+            )
+        )
+        if (
+            existing.document_id != document.id
+            or existing.created_by != g.user.id
+            or audit is None
+            or audit.detail.get("draft_hash") != draft_hash
+        ):
+            raise ApiError("请求编号已被使用，请重新保存", 409, 40901)
+        return success({"document": _document_data(document), "version": _version_data(existing)})
+    latest = db.session.scalar(
+        db.select(DocumentVersion)
+        .where(DocumentVersion.document_id == document.id)
+        .order_by(DocumentVersion.version_no.desc())
+    )
+    if latest is None or latest.id != base_id:
+        raise ApiError("文档已产生新版本，请保留当前编辑内容，重新打开最新版本后修改", 409, 40901)
+    base = _excel_version(document.id, base_id)
+    try:
+        content = workbook_bytes(body["workbook"])
+    except ApiError:
+        raise
+    except (RuntimeError, ValueError, TypeError) as error:
+        raise ApiError("Excel 工作簿格式不正确", 422, 42202) from error
+    if len(content) > _max_document_size():
+        raise ApiError("文档超过允许保存的大小", 422, 42202)
+    original_stem = PurePath(base.filename).stem
+    filename = f"{original_stem}.xlsx"
+    version = DocumentVersion(
+        id=version_id,
+        document_id=document.id,
+        version_no=_next_version(document.id),
+        minio_bucket=knowledge_base_bucket(document.knowledge_base_id),
+        minio_object_key=(
+            f"knowledge-bases/{document.knowledge_base_id}/documents/{document.id}/versions/{version_id}.xlsx"
+        ),
+        filename=filename,
+        content_type=CONTENT_TYPES[".xlsx"],
+        file_size=len(content),
+        status="PENDING_UPLOAD",
+        created_by=g.user.id,
+    )
+    uploaded = False
+    object_key, bucket = version.minio_object_key, version.minio_bucket
+    try:
+        db.session.add(version)
+        _api_storage(
+            put_object,
+            object_key,
+            BytesIO(content),
+            bucket=bucket,
+            length=len(content),
+            content_type=version.content_type,
+        )
+        uploaded = True
+        _complete_version(version)
+        _record(
+            "document.excel.edit",
+            document,
+            {"version_id": str(version.id), "base_version_id": str(base.id), "draft_hash": draft_hash},
+        )
+        db.session.commit()
+    except Exception as error:
+        db.session.rollback()
+        if uploaded:
+            try:
+                delete_object(object_key, bucket=bucket)
+            except StorageError:
+                current_app.logger.warning("Could not clean up failed Excel edit %s", version_id)
+        if isinstance(error, IntegrityError):
+            raise ApiError("文档正在保存，请稍后重试", 409, 40902) from None
+        raise
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version)}), 201
+
+
 @documents.get("/documents/<uuid:document_id>/preview-url")
 @page_required("/documents")
 def document_preview_url(document_id):
@@ -754,7 +899,8 @@ def document_text_preview(document_id):
     if not version_id:
         raise ApiError("文档还没有可预览的版本", 404, 40401)
     version = _find_version(_uuid(version_id, "版本 ID"), document_id=document.id)
-    if PurePath(version.filename).suffix.lower() not in {".pdf", ".docx"}:
+    extension = PurePath(version.filename).suffix.lower()
+    if extension not in {".pdf", ".docx"} | EXCEL_EXTENSIONS:
         raise ApiError("该文件类型不支持文本预览", 409, 40901)
     content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size())
     try:
@@ -764,13 +910,20 @@ def document_text_preview(document_id):
     except (RuntimeError, ValueError) as error:
         raise ApiError(str(error), 422, 42202) from error
     result = {"document": _document_data(document), "version": _version_data(version), "content": text}
-    if PurePath(version.filename).suffix.lower() == ".docx":
+    if extension == ".docx":
         try:
             from .docx_preview import docx_html
 
             result["html"] = docx_html(content)
         except (ValueError, RuntimeError, TypeError) as error:
             raise ApiError("Word 文档预览格式解析失败，请下载原文件查看", 422, 42202) from error
+    elif extension in EXCEL_EXTENSIONS:
+        try:
+            from .excel_authoring import parse_workbook, workbook_text
+
+            result["content"] = workbook_text(parse_workbook(version.filename, content))
+        except (RuntimeError, ValueError, TypeError) as error:
+            raise ApiError("Excel 文档预览格式解析失败，请下载原文件查看", 422, 42202) from error
     return success(result)
 
 

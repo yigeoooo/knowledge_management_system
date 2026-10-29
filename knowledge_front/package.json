@@ -13,13 +13,16 @@
     "@element-plus/icons-vue": "^2.3.2",
     "@tiptap/core": "3.32.0",
     "@umoteam/editor": "11.1.1",
+    "@univerjs/preset-sheets-core": "^1.2.0",
+    "@univerjs/presets": "^1.2.0",
     "dompurify": "^3.4.17",
     "element-plus": "^2.11.5",
     "highlight.js": "^11.12.0",
     "marked": "^18.1.1",
     "marked-highlight": "^2.2.4",
     "vue": "^3.5.22",
-    "vue-router": "^4.6.3"
+    "vue-router": "^4.6.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",

@@ -12,6 +12,7 @@ CHANGE_ACTIONS = {
         "document.update",
         "document.upload.complete",
         "document.word.edit",
+        "document.excel.edit",
         "document.archive",
     ),
 }

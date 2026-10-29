@@ -449,4 +449,10 @@ def document_bytes(format_name, content, *, source=None):
         return content.encode("utf-8")
     if format_name == "docx":
         return _word_bytes(content, source)
-    _invalid("文档格式只能为 Markdown 或 Word")
+    if format_name == "xlsx":
+        if source is not None:
+            _invalid("Excel 在线编辑不需要传入源文件")
+        from .excel_authoring import workbook_bytes
+
+        return workbook_bytes(content)
+    _invalid("文档格式只能为 Markdown、Word 或 Excel")

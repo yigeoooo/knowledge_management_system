@@ -90,6 +90,13 @@ def _extract_text(filename: str, content: bytes) -> str | None:
             raise RuntimeError("Word 文本提取失败，请确认文件格式有效") from error
     if extension == ".doc":
         return None
+    if extension in {".xls", ".xlsx"}:
+        try:
+            from .excel_authoring import parse_workbook, workbook_text
+
+            return workbook_text(parse_workbook(filename, content)).strip()
+        except Exception as error:
+            raise RuntimeError("Excel 文本提取失败，请确认文件格式有效") from error
     if extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm", ".mov", ".avi"}:
         return None
     raise RuntimeError("不支持的文档类型")

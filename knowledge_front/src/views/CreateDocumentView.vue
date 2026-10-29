@@ -5,6 +5,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { Upload, Refresh, Plus, FullScreen } from "@element-plus/icons-vue";
 import type { JSONContent } from "@tiptap/core";
 const WordEditor = defineAsyncComponent(() => import("../components/WordEditor.vue"));
+const ExcelEditor = defineAsyncComponent(() => import("../components/ExcelEditor.vue"));
+import type { ExcelWorkbook } from "../components/ExcelEditor.vue";
 import MarkdownContent from "../components/MarkdownContent.vue";
 import { api, ApiError, session } from "../lib/session";
 
@@ -14,11 +16,17 @@ interface SavedDocument {
   version: { filename: string; status: string; error_message: string | null; task: { status: string; error_message: string | null } | null };
 }
 const router = useRouter();
-const format = ref<"md" | "docx">("md");
+const format = ref<"md" | "docx" | "xlsx">("md");
 const title = ref("");
 const markdown = ref("");
 const wordContent = ref<JSONContent>({ type: "doc", content: [{ type: "paragraph" }] });
 const wordText = ref("");
+const emptyWorkbook = (): ExcelWorkbook => ({
+  sheets: [{ id: "sheet1", name: "Sheet1", row_count: 100, column_count: 26, cells: {} }],
+  active_sheet: "sheet1",
+});
+const excelWorkbook = ref<ExcelWorkbook>(emptyWorkbook());
+const excelLatest = ref<ExcelWorkbook>(excelWorkbook.value);
 const selectedBase = ref("");
 const bases = ref<Base[]>([]);
 const basesLoading = ref(false);
@@ -40,31 +48,45 @@ try {
   const stored = sessionStorage.getItem(draftKey);
   if (stored) {
     const draft = JSON.parse(stored);
-    if (draft.format === "md" || draft.format === "docx") format.value = draft.format;
+    if (draft.format === "md" || draft.format === "docx" || draft.format === "xlsx") format.value = draft.format;
     if (typeof draft.title === "string") title.value = draft.title;
     if (typeof draft.markdown === "string") markdown.value = draft.markdown;
     if (draft.wordContent?.type === "doc") wordContent.value = draft.wordContent;
+    if (draft.excelWorkbook?.sheets?.length) {
+      excelWorkbook.value = draft.excelWorkbook;
+      excelLatest.value = draft.excelWorkbook;
+    }
     if (typeof draft.selectedBase === "string") selectedBase.value = draft.selectedBase;
   }
 } catch { draftError.value = "无法恢复浏览器草稿，请重新填写内容。"; }
 
 const wordEditor = ref<{ reset(content: JSONContent): void; fullscreen(): void } | null>(null);
+const excelEditor = ref<{ fullscreen(): void; snapshot(): ExcelWorkbook } | null>(null);
 function updateWord(content: JSONContent, text: string) {
   wordContent.value = content;
   wordText.value = text;
 }
-const contentLength = computed(() => (format.value === "md" ? markdown.value : wordText.value).length);
-const hasContent = computed(() => !!(format.value === "md" ? markdown.value : wordText.value).trim());
+function updateExcel(workbook: ExcelWorkbook) { excelLatest.value = workbook; }
+const contentLength = computed(() => {
+  if (format.value === "md") return markdown.value.length;
+  if (format.value === "docx") return wordText.value.length;
+  return excelLatest.value.sheets.reduce((count, sheet) => count + Object.keys(sheet.cells || {}).length, 0);
+});
+const hasContent = computed(() => {
+  if (format.value === "md") return !!markdown.value.trim();
+  if (format.value === "docx") return !!wordText.value.trim();
+  return excelLatest.value.sheets.some(sheet => Object.values(sheet.cells || {}).some(cell => (cell.value !== null && cell.value !== "") || !!cell.formula));
+});
 const dirty = computed(() => !saved.value && (!!title.value.trim() || hasContent.value));
 const canSave = computed(() => !!title.value.trim() && hasContent.value && !!selectedBase.value && !saving.value && !saved.value && contentLength.value <= 200000);
 const processing = computed(() => !!saved.value && ["UPLOADED", "PROCESSING", "EMBEDDING"].includes(saved.value.version.status) && saved.value.version.task?.status !== "FAILED");
 const indexFailed = computed(() => saved.value?.version.status === "FAILED" || saved.value?.version.task?.status === "FAILED");
 const documentLink = computed(() => session.pages.some(page => page.route_path === "/documents" && router.hasRoute(`page:${page.code}`)));
 
-watch([format, title, markdown, wordContent, selectedBase], () => {
+watch([format, title, markdown, wordContent, excelWorkbook, excelLatest, selectedBase], () => {
   if (saved.value) return;
   try {
-    sessionStorage.setItem(draftKey, JSON.stringify({ format: format.value, title: title.value, markdown: markdown.value, wordContent: wordContent.value, selectedBase: selectedBase.value }));
+    sessionStorage.setItem(draftKey, JSON.stringify({ format: format.value, title: title.value, markdown: markdown.value, wordContent: wordContent.value, excelWorkbook: excelLatest.value, selectedBase: selectedBase.value }));
     draftError.value = "";
   } catch { draftError.value = "浏览器草稿空间不足，请及时保存到知识库。"; }
 }, { deep: true });
@@ -88,7 +110,7 @@ async function loadBases() {
   finally { if (!disposed) basesLoading.value = false; }
 }
 async function changeFormat(value: string | number | boolean | undefined) {
-  if (value !== "md" && value !== "docx" || value === format.value || saving.value || saved.value) return;
+  if (value !== "md" && value !== "docx" && value !== "xlsx" || value === format.value || saving.value || saved.value) return;
   if (hasContent.value) {
     try { await ElMessageBox.confirm("切换格式会清空当前正文，标题和知识库选择会保留。", "切换文档格式", { confirmButtonText: "切换格式", cancelButtonText: "继续编辑", type: "warning" }); }
     catch { return; }
@@ -96,6 +118,8 @@ async function changeFormat(value: string | number | boolean | undefined) {
   markdown.value = "";
   wordContent.value = { type: "doc", content: [{ type: "paragraph" }] };
   wordText.value = "";
+  excelWorkbook.value = emptyWorkbook();
+  excelLatest.value = excelWorkbook.value;
   wordEditor.value?.reset(wordContent.value);
   format.value = value;
   error.value = "";
@@ -129,7 +153,13 @@ async function save() {
     if (!saved.value && !saving.value) error.value = "请填写文档标题和正文，并选择知识库。";
     return false;
   }
-  const body = { knowledge_base_id: selectedBase.value, title: title.value.trim(), format: format.value, content: format.value === "md" ? markdown.value : wordContent.value };
+  if (format.value === "xlsx") excelLatest.value = excelEditor.value?.snapshot() || excelLatest.value;
+  const body = {
+    knowledge_base_id: selectedBase.value,
+    title: title.value.trim(),
+    format: format.value,
+    content: format.value === "md" ? markdown.value : format.value === "docx" ? wordContent.value : excelLatest.value,
+  };
   const signature = JSON.stringify(body);
   if (attempt?.signature !== signature) attempt = { signature, id: requestId() };
   saving.value = true;
@@ -164,6 +194,8 @@ async function newDocument() {
   markdown.value = "";
   wordContent.value = { type: "doc", content: [{ type: "paragraph" }] };
   wordText.value = "";
+  excelWorkbook.value = emptyWorkbook();
+  excelLatest.value = excelWorkbook.value;
   wordEditor.value?.reset(wordContent.value);
   error.value = "";
   statusError.value = "";
@@ -187,6 +219,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(pollTimer); window.
     <div><div class="page-eyebrow">CREATE A DOCUMENT</div><h1>创建文档</h1><p>从空白开始记录知识，编写完成后保存到知识库。</p></div>
     <div class="authoring-actions">
       <el-button v-if="format === 'docx'" :icon="FullScreen" @click="wordEditor?.fullscreen()">全屏编辑</el-button>
+      <el-button v-if="format === 'xlsx'" :icon="FullScreen" @click="excelEditor?.fullscreen()">全屏编辑</el-button>
       <el-button :icon="Plus" :disabled="saving" @click="newDocument">新建文档</el-button>
     </div>
   </div>
@@ -209,7 +242,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(pollTimer); window.
             <el-option v-for="base in bases" :key="base.id" :value="base.id" :label="base.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="文档格式"><el-radio-group :model-value="format" :disabled="saving || !!saved" @change="changeFormat"><el-radio-button value="md">Markdown</el-radio-button><el-radio-button value="docx">Word</el-radio-button></el-radio-group></el-form-item>
+        <el-form-item label="文档格式"><el-radio-group :model-value="format" :disabled="saving || !!saved" @change="changeFormat"><el-radio-button value="md">Markdown</el-radio-button><el-radio-button value="docx">Word</el-radio-button><el-radio-button value="xlsx">Excel 表格</el-radio-button></el-radio-group></el-form-item>
       </el-form>
       <el-alert v-if="basesError || (!basesLoading && !bases.length)" :title="basesError || '暂无可用知识库，请联系管理员创建并启用知识库。'" :type="basesError ? 'error' : 'info'" :closable="false"><el-button text @click="loadBases">重新加载</el-button></el-alert>
     </div>
@@ -219,7 +252,8 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(pollTimer); window.
     </div>
     <section v-else class="word-editor-section">
       <div class="word-save-note">草稿自动保留在当前标签页；点击“保存到知识库”后上传并入库。</div>
-      <WordEditor ref="wordEditor" :content="wordContent" :title="title" :disabled="saving || !!saved" :save-document="save" @change="updateWord" />
+      <WordEditor v-if="format === 'docx'" ref="wordEditor" :content="wordContent" :title="title" :disabled="saving || !!saved" :save-document="save" @change="updateWord" />
+      <ExcelEditor v-else ref="excelEditor" :workbook="excelWorkbook" :title="title" :disabled="saving || !!saved" @change="updateExcel" />
     </section>
     <div class="authoring-footer"><span>{{ contentLength.toLocaleString() }} / 200,000 字符 · {{ saved ? '已保存' : '草稿保留在当前标签页' }}</span><el-button type="primary" :icon="Upload" :loading="saving" :disabled="!canSave" @click="save">保存到知识库</el-button></div>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
