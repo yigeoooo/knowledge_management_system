@@ -120,7 +120,7 @@ test('real XLSX upload, edit and download preserve Excel styles and original byt
   await page.keyboard.press('Enter')
   await expect.poll(() => formulaValue(page, '.excel-edit-panel', '1,2')).toBe(100)
   const saving = page.waitForResponse(response => response.url().endsWith('/excel-content') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: '保存 Excel 新版本', exact: true }).click()
+  await page.getByRole('button', { name: '保存为新版本', exact: true }).click()
   const saved = await saving
   expect(saved.status(), await saved.text()).toBe(201)
   await expect(page.locator('.excel-preview')).toBeVisible()
@@ -217,7 +217,7 @@ test('cached sums, dependent totals and cross-sheet formulas recalculate after e
 
   for (const [input, sum, total] of [[1236, 286647, 809128], [1240, 286651, 809132]]) {
     await page.getByRole('button', { name: '在线编辑', exact: true }).click()
-    const save = page.getByRole('button', { name: '保存 Excel 新版本', exact: true })
+    const save = page.getByRole('button', { name: '保存为新版本', exact: true })
     await selectFirstCell(page, '.excel-edit-panel')
     await page.keyboard.press('ArrowDown')
     for (let column = 0; column < 6; column++) await page.keyboard.press('ArrowRight')

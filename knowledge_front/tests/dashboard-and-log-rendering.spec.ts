@@ -149,3 +149,73 @@ for (const path of ['/qa', '/qa-logs']) {
     await expect(page.locator('.source-plain-text')).toHaveText(pdfSource.content)
   })
 }
+
+for (const path of ['/qa', '/qa-logs']) {
+  test(`${path} renders Excel citation cells as tables with sheets, coordinates and literal content`, async ({ page }) => {
+    const excel = { ...source, filename: '部门全年收支表.XLSX', document_title: '部门全年收支表', content: [
+      '工作表：收支',
+      'A1：部门\\月份', 'B1：1', 'C1：2', 'H1：合计',
+      'A2：开发部门', 'B2：23452', 'C2：123124', 'H2：=SUM(B2:G2)',
+      'A3：测试部门', 'B3：23551', 'C3：12321', 'H3：265448',
+      'G5：总额', 'H5：809127',
+      '工作表：说明', 'A1：**原样内容** | A2: 单元格内说明',
+      '第二行说明', 'C1：<img src=x onerror="window.excelUnsafe=true">',
+    ].join('\n') }
+    const partial = { ...source, source_id: '2', chunk_id: 'partial-excel', filename: '旧版.xls',
+      content: '上个单元格的截断片段\nB12：00123\nAA12：0\nB13：-2.5\nAA13：尾部片段' }
+    const fallback = { ...source, source_id: '3', chunk_id: 'unknown-excel', filename: '旧记录.xlsx',
+      content: '历史表格文本\n无法还原的引用片段\n<iframe src="https://example.com"></iframe>' }
+    const sparse = { ...source, source_id: '4', chunk_id: 'sparse-excel', filename: '稀疏.xlsx',
+      content: '工作表：稀疏引用\nA1：起点\nXFD1048576：末端' }
+    const overlapping = { ...source, source_id: '5', chunk_id: 'overlapping-excel', filename: '重叠.xlsx',
+      content: 'A1：第一段\nA1：第二段' }
+    const detail = { id: 'log', question: '收支是多少？', answer: '总额 809127。[1]', sources: [excel, partial, fallback, sparse, overlapping, pdfSource],
+      status: 'SUCCESS', answer_status: 'answered', source_type: 'WEB', created_at: '2026-10-29T00:00:00Z', request_id: 'excel-citation' }
+    await page.route('**/api/v1/**', async route => {
+      const url = new URL(route.request().url()).pathname
+      let data: unknown = detail
+      if (url.endsWith('/auth/refresh')) data = { access_token: 'test-token', user: { id: 'reader', display_name: 'Reader', role: 'user' }, pages: [qa, logs] }
+      else if (url.endsWith('/knowledge-bases')) data = { items: [{ id: 'base', name: '设备资料', status: 'active' }] }
+      else if (url.endsWith('/web/suggested-questions')) data = { questions: [], status: 'empty' }
+      else if (url.endsWith('/qa-logs')) data = { items: [detail], total: 1 }
+      await route.fulfill({ json: { code: 0, data } })
+    })
+    await page.goto(path)
+    if (path === '/qa') {
+      await page.getByRole('textbox', { name: '你的问题' }).fill('收支是多少？')
+      await page.getByRole('button', { name: '发送问题' }).click()
+    } else {
+      await page.getByRole('button', { name: '查看详情' }).click()
+    }
+    const table = page.getByRole('table', { name: '工作表：收支', exact: true })
+    await expect(table).toBeVisible()
+    await expect(table.getByRole('columnheader')).toHaveText(['行', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
+    await expect(table.locator('[data-cell="A2"]')).toHaveText('开发部门')
+    await expect(table.locator('[data-cell="B2"]')).toHaveText('23452')
+    await expect(table.locator('[data-cell="D2"]')).toHaveText('')
+    await expect(table.locator('[data-cell="H2"]')).toHaveText('=SUM(B2:G2)')
+    await expect(table.locator('[data-cell="H5"]')).toHaveText('809127')
+    const notes = page.getByRole('table', { name: '工作表：说明', exact: true })
+    await expect(notes.locator('[data-cell="A1"]')).toHaveText('**原样内容** | A2: 单元格内说明\n第二行说明')
+    await expect(notes.locator('[data-cell="C1"]')).toContainText('<img src=x')
+    await expect(page.locator('.excel-source [data-cell="B12"]')).toHaveText('00123')
+    await expect(page.locator('.excel-source [data-cell="AA12"]')).toHaveText('0')
+    await expect(page.locator('.excel-source')).toContainText(['', '上个单元格的截断片段', '历史表格文本', '稀疏引用', '第一段'])
+    const sparseTable = page.getByRole('table', { name: '工作表：稀疏引用', exact: true })
+    await expect(sparseTable.locator('td')).toHaveCount(4)
+    await expect(sparseTable.locator('[data-cell="XFD1048576"]')).toHaveText('末端')
+    await expect(page.locator('.excel-source').last()).toHaveText(overlapping.content)
+    await expect(page.locator('.excel-source img, .excel-source iframe, .excel-source strong')).toHaveCount(0)
+    expect(await page.evaluate(() => (window as any).excelUnsafe)).toBeUndefined()
+    await expect(page.locator('.source-plain-text').filter({ hasText: '接口说明' })).toHaveText(pdfSource.content)
+    const scroll = table.locator('..')
+    await expect(scroll).toHaveCSS('overflow-x', 'auto')
+    const fits = await scroll.evaluate(element => element.getBoundingClientRect().right <= window.innerWidth)
+    expect(fits).toBe(true)
+    await scroll.scrollIntoViewIfNeeded()
+    await scroll.evaluate(element => { element.scrollLeft = element.scrollWidth })
+    await expect(table.locator('[data-cell="H2"]')).toBeInViewport()
+    await scroll.evaluate(element => { element.scrollLeft = 0 })
+    await page.screenshot({ path: test.info().outputPath('excel-citation.png') })
+  })
+}

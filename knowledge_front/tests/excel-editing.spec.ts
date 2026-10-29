@@ -144,7 +144,7 @@ test('Excel upload, preview, online edit, new-version save and download work end
   await page.keyboard.type('在线修改')
   await page.keyboard.press('Enter')
   const saveResponse = page.waitForResponse(response => response.url().endsWith(`/documents/${documentId}/excel-content`) && response.request().method() === 'POST')
-  await page.getByRole('button', { name: '保存 Excel 新版本', exact: true }).click()
+  await page.getByRole('button', { name: '保存为新版本', exact: true }).click()
   await saveResponse
   await expect(page.getByText('新版本已提交，等待索引完成')).toBeVisible()
   expect(editedBody?.base_version_id).toBe(firstVersionId)
