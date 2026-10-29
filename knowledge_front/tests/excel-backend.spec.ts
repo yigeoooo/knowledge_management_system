@@ -1,6 +1,7 @@
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
+import * as XLSX from 'xlsx'
 
 let server: ChildProcess
 let origin: string
@@ -42,6 +43,16 @@ async function selectFirstCell(page: Page, selector = '.excel-editor') {
   await page.mouse.click(box!.x + 56, box!.y + 30)
 }
 
+async function formulaValue(page: Page, selector: string, coordinate: string, sheetIndex = 0) {
+  // Read the editor's public snapshot, including the formula engine's result.
+  return page.locator(`${selector}.excel-editor, ${selector} .excel-editor`).first().evaluate((element, { coordinate, sheetIndex }) => {
+    let component = (element as any).__vueParentComponent
+    while (component && !component.exposed?.snapshot) component = component.parent
+    if (!component) throw new Error('Excel editor snapshot is unavailable')
+    return component.exposed.snapshot().sheets[sheetIndex].cells[coordinate]?.value
+  }, { coordinate, sheetIndex })
+}
+
 test('Excel pasted cells and toolbar styles save through the real API and reopen as XLSX', async ({ page, context, request }) => {
   await connect(page, request)
   await page.goto('/create-document')
@@ -56,6 +67,7 @@ test('Excel pasted cells and toolbar styles save through the real API and reopen
   await expect.poll(() => page.evaluate(() => Object.values(sessionStorage).join(''))).toContain('开发部门')
   await page.keyboard.press('ControlOrMeta+b')
   await page.keyboard.press('ControlOrMeta+u')
+  await expect.poll(() => formulaValue(page, '.excel-editor', '1,3')).toBe(579)
   const saving = page.waitForResponse(response => response.url().endsWith('/documents/create') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '保存到知识库', exact: true }).click()
   const saved = await saving
@@ -65,6 +77,7 @@ test('Excel pasted cells and toolbar styles save through the real API and reopen
   await page.goto('/documents')
   await page.getByRole('row').filter({ hasText: '真实保存回归' }).getByRole('button', { name: '预览', exact: true }).click()
   await expect.poll(async () => page.locator('.excel-preview canvas').evaluateAll(items => items.some(item => item.width > 500 && item.height > 100))).toBe(true)
+  await expect.poll(() => formulaValue(page, '.excel-preview', '1,3')).toBe(579)
   const previewResponse = page.waitForResponse(response => response.url().includes('/excel-content'))
   await page.getByRole('button', { name: '在线编辑', exact: true }).click()
   const workbook = (await (await previewResponse).json()).data.workbook
@@ -73,6 +86,18 @@ test('Excel pasted cells and toolbar styles save through the real API and reopen
   expect(cells.some(cell => cell.formula === '=SUM(B2:C2)')).toBe(true)
   expect(cells.some(cell => cell.style.font.bold && cell.style.font.underline === 'single')).toBe(true)
   expect(data.version.filename).toBe('真实保存回归.xlsx')
+  await expect.poll(() => formulaValue(page, '.excel-edit-panel', '1,3')).toBe(579)
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await expect(page.locator('.excel-edit-panel')).toHaveCount(0)
+  await page.getByRole('button', { name: '在线编辑', exact: true }).click()
+  await selectFirstCell(page, '.excel-edit-panel')
+  await page.keyboard.insertText('尚未保存')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => formulaValue(page, '.excel-edit-panel', '0,0')).toBe('尚未保存')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await expect(page.getByRole('button', { name: '继续编辑', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.locator('.excel-edit-panel')).toHaveCount(0)
 })
 
 test('real XLSX upload, edit and download preserve Excel styles and original bytes', async ({ page, request }) => {
@@ -85,15 +110,21 @@ test('real XLSX upload, edit and download preserve Excel styles and original byt
   await page.locator('input[type=file]').first().setInputFiles({ name: '格式回读.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: original })
   await page.getByRole('button', { name: '开始上传', exact: true }).click()
   await page.getByRole('row').filter({ hasText: '格式回读' }).getByRole('button', { name: '预览', exact: true }).click()
+  await expect.poll(() => formulaValue(page, '.excel-preview', '1,2')).toBe(20)
   await page.getByRole('button', { name: '在线编辑', exact: true }).click()
   await selectFirstCell(page, '.excel-edit-panel')
   await page.keyboard.insertText('修改名称')
   await page.keyboard.press('Enter')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.type('60')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => formulaValue(page, '.excel-edit-panel', '1,2')).toBe(100)
   const saving = page.waitForResponse(response => response.url().endsWith('/excel-content') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '保存 Excel 新版本', exact: true }).click()
   const saved = await saving
   expect(saved.status(), await saved.text()).toBe(201)
   await expect(page.locator('.excel-preview')).toBeVisible()
+  await expect.poll(() => formulaValue(page, '.excel-preview', '1,2')).toBe(100)
   const downloadResponse = page.waitForResponse(response => response.url().includes('/download-url'))
   await page.locator('.document-actions').getByRole('button', { name: '下载', exact: true }).click()
   const url = (await (await downloadResponse).json()).data.download_url
@@ -151,4 +182,58 @@ test('uploading text renamed to XLSX explains how to save a real workbook', asyn
   })
   await page.getByRole('button', { name: '开始上传', exact: true }).click()
   await expect(page.getByRole('alert').filter({ hasText: '文件实际是文本文件' })).toContainText('另存为')
+})
+
+test('cached sums, dependent totals and cross-sheet formulas recalculate after each version save', async ({ page, request }) => {
+  await connect(page, request)
+  const source = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ['部门', 1, 2, 3, 4, 5, 6, '合计'],
+    ['开发部门', 23452, 123124, 123123, 12356, 3356, 1235],
+    ['测试部门', 23551, 12321, 4677, 124678, 67754, 32467],
+    ['产品部门', 2134, 214213, 5454, 32566, 324, 2342],
+    ['', '', '', '', '', '', '总额'],
+  ])
+  sheet.H2 = { t: 'n', f: 'SUM(B2:G2)', v: 286646 }
+  sheet.H3 = { t: 'n', f: 'SUM(B3:G3)', v: 265448 }
+  sheet.H4 = { t: 'n', f: 'SUM(B4:G4)', v: 257033 }
+  sheet.H5 = { t: 'n', f: 'SUM(H2:H4)', v: 809127 }
+  XLSX.utils.book_append_sheet(source, sheet, '收支')
+  XLSX.utils.book_append_sheet(source, {
+    '!ref': 'A1:C1',
+    A1: { t: 'n', f: "'收支'!H5", v: 809127 },
+    B1: { t: 's', f: 'IF(A1>0,"正常","空")', v: '正常' },
+    C1: { t: 'n', f: 'SUM(A10:A11)', v: 0 },
+  }, '汇总')
+  await page.goto('/documents')
+  await page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: '部门公式回归.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: XLSX.write(source, { type: 'buffer', bookType: 'xlsx' }),
+  })
+  await page.getByRole('button', { name: '开始上传', exact: true }).click()
+  await page.getByRole('row').filter({ hasText: '部门公式回归' }).getByRole('button', { name: '预览', exact: true }).click()
+  await expect.poll(() => formulaValue(page, '.excel-preview', '4,7')).toBe(809127)
+
+  for (const [input, sum, total] of [[1236, 286647, 809128], [1240, 286651, 809132]]) {
+    await page.getByRole('button', { name: '在线编辑', exact: true }).click()
+    const save = page.getByRole('button', { name: '保存 Excel 新版本', exact: true })
+    await selectFirstCell(page, '.excel-edit-panel')
+    await page.keyboard.press('ArrowDown')
+    for (let column = 0; column < 6; column++) await page.keyboard.press('ArrowRight')
+    await page.keyboard.type(String(input))
+    await page.keyboard.press('Enter')
+    await expect.poll(() => formulaValue(page, '.excel-edit-panel', '1,7')).toBe(sum)
+    await expect.poll(() => formulaValue(page, '.excel-edit-panel', '4,7')).toBe(total)
+    const saving = page.waitForResponse(response => response.url().endsWith('/excel-content') && response.request().method() === 'POST')
+    await save.click()
+    const response = await saving
+    expect(response.status(), await response.text()).toBe(201)
+    await expect.poll(() => formulaValue(page, '.excel-preview', '1,6')).toBe(input)
+    await expect.poll(() => formulaValue(page, '.excel-preview', '1,7')).toBe(sum)
+    await expect.poll(() => formulaValue(page, '.excel-preview', '4,7')).toBe(total)
+    await expect.poll(() => formulaValue(page, '.excel-preview', '0,0', 1)).toBe(total)
+    await expect.poll(() => formulaValue(page, '.excel-preview', '0,1', 1)).toBe('正常')
+    await expect.poll(() => formulaValue(page, '.excel-preview', '0,2', 1)).toBe(0)
+  }
 })

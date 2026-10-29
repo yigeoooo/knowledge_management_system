@@ -162,7 +162,9 @@ function toUniverWorkbook(source: ExcelWorkbook) {
       if (!Number.isInteger(row) || !Number.isInteger(column) || !payload) continue;
       cellData[row] ||= {};
       cellData[row][column] = {
-        v: payload.formula ? (payload.value ?? 0) : payload.value,
+        // XLSX files saved by openpyxl keep formulas without cached results.
+        // Univer recalculates empty caches on load; a synthetic zero skips it.
+        v: payload.value,
         f: payload.formula || undefined,
         s: toUniverStyle(payload.style),
       };

@@ -196,7 +196,7 @@ test('robot management supports create, detail, edit, and disable', async ({ pag
   await expect(page.getByText('一号机器人')).toBeVisible()
 
   await page.getByRole('button', { name: '详情', exact: true }).click()
-  await expect(page.getByText('ROBOT-001')).toBeVisible()
+  await expect(page.locator('.robot-detail-dialog').getByText('ROBOT-001', { exact: true })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('.robot-detail-dialog')).toBeHidden()
 

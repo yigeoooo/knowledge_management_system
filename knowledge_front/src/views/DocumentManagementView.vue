@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import type { JSONContent } from "@tiptap/core";
 const WordEditor = defineAsyncComponent(() => import("../components/WordEditor.vue"));
@@ -105,7 +113,10 @@ const editing = ref(false);
 const editorText = ref("");
 const editorBusy = ref(false);
 const wordContent = ref<JSONContent>({ type: "doc", content: [] });
-const emptyWorkbook = (): ExcelWorkbook => ({ sheets: [{ id: "sheet1", name: "Sheet1", row_count: 100, column_count: 26, cells: {} }], active_sheet: "sheet1" });
+const emptyWorkbook = (): ExcelWorkbook => ({
+  sheets: [{ id: "sheet1", name: "Sheet1", row_count: 100, column_count: 26, cells: {} }],
+  active_sheet: "sheet1",
+});
 const excelWorkbook = ref<ExcelWorkbook>(emptyWorkbook());
 const excelLatest = ref<ExcelWorkbook>(excelWorkbook.value);
 const excelEditor = ref<{ snapshot(): ExcelWorkbook } | null>(null);
@@ -115,33 +126,67 @@ const wordReady = ref(false);
 const excelReady = ref(false);
 let saveAttempt: { payload: string; id: string } | null = null;
 const isWord = computed(() => extension(selectedVersion.value?.filename || "") === ".docx");
-const isExcel = computed(() => [".xls", ".xlsx"].includes(extension(selectedVersion.value?.filename || "")));
+const isExcel = computed(() =>
+  [".xls", ".xlsx"].includes(extension(selectedVersion.value?.filename || ""))
+);
 const canEdit = computed(() => isText.value || isWord.value || isExcel.value);
-const dirty = computed(() => editing.value && (isWord.value
-  ? JSON.stringify(wordContent.value) !== editBaseline.value
-  : isExcel.value ? JSON.stringify(excelLatest.value) !== editBaseline.value : editorText.value !== previewText.value));
+function excelEditSignature(workbook: ExcelWorkbook) {
+  // Formula results are derived data. Recalculation after loading a workbook
+  // must not mark an otherwise untouched document as edited.
+  return JSON.stringify(workbook, function (key, value) {
+    return key === "value" && this.formula ? null : value;
+  });
+}
+const dirty = computed(
+  () =>
+    editing.value &&
+    (isWord.value
+      ? JSON.stringify(wordContent.value) !== editBaseline.value
+      : isExcel.value
+        ? excelEditSignature(excelLatest.value) !== editBaseline.value
+        : editorText.value !== previewText.value)
+);
 function updateWord(content: JSONContent) {
   wordContent.value = content;
-  if (!wordReady.value) { editBaseline.value = JSON.stringify(content); wordReady.value = true; }
+  if (!wordReady.value) {
+    editBaseline.value = JSON.stringify(content);
+    wordReady.value = true;
+  }
 }
 function updateExcel(workbook: ExcelWorkbook) {
   excelLatest.value = workbook;
   if (!excelReady.value) {
-    editBaseline.value = JSON.stringify(workbook);
+    editBaseline.value = excelEditSignature(workbook);
     excelReady.value = true;
   }
 }
 async function discardEdits() {
   if (editorBusy.value) return false;
+  if (editing.value && isExcel.value && excelEditor.value)
+    excelLatest.value = excelEditor.value.snapshot();
   if (dirty.value) {
-    try { await ElMessageBox.confirm("放弃尚未保存的修改？", "未保存的文档", { confirmButtonText: "放弃修改", cancelButtonText: "继续编辑", type: "warning" }); }
-    catch { return false; }
+    try {
+      await ElMessageBox.confirm("放弃尚未保存的修改？", "未保存的文档", {
+        confirmButtonText: "放弃修改",
+        cancelButtonText: "继续编辑",
+        type: "warning",
+      });
+    } catch {
+      return false;
+    }
   }
   editing.value = false;
   return true;
 }
-async function closeDetail(done: () => void) { if (await discardEdits()) done(); }
-function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || editorBusy.value) { event.preventDefault(); event.returnValue = ""; } }
+async function closeDetail(done: () => void) {
+  if (await discardEdits()) done();
+}
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (dirty.value || editorBusy.value) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+}
 onBeforeRouteLeave(discardEdits);
 onMounted(() => window.addEventListener("beforeunload", beforeUnload));
 onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
@@ -495,15 +540,19 @@ async function beginEdit() {
     editBaseId.value = selectedVersion.value.id;
     saveAttempt = null;
     if (isWord.value) {
-      const result = await api<{ content: JSONContent }>(`/documents/${detail.value.id}/word-content?version_id=${editBaseId.value}`);
+      const result = await api<{ content: JSONContent }>(
+        `/documents/${detail.value.id}/word-content?version_id=${editBaseId.value}`
+      );
       wordContent.value = result.content;
       editBaseline.value = JSON.stringify(result.content);
       wordReady.value = false;
     } else if (isExcel.value) {
-      const result = await api<{ workbook: ExcelWorkbook }>(`/documents/${detail.value.id}/excel-content?version_id=${editBaseId.value}`);
+      const result = await api<{ workbook: ExcelWorkbook }>(
+        `/documents/${detail.value.id}/excel-content?version_id=${editBaseId.value}`
+      );
       excelWorkbook.value = result.workbook;
       excelLatest.value = result.workbook;
-      editBaseline.value = JSON.stringify(result.workbook);
+      editBaseline.value = excelEditSignature(result.workbook);
       excelReady.value = false;
     } else {
       editorText.value = previewText.value;
@@ -511,7 +560,9 @@ async function beginEdit() {
     editing.value = true;
   } catch (error) {
     detailError.value = (error as Error).message;
-  } finally { editorBusy.value = false; }
+  } finally {
+    editorBusy.value = false;
+  }
 }
 
 async function saveEdit(): Promise<boolean> {
@@ -523,19 +574,28 @@ async function saveEdit(): Promise<boolean> {
     if (isWord.value) {
       const body = { base_version_id: editBaseId.value, content: wordContent.value };
       const payload = JSON.stringify(body);
-      if (!saveAttempt || saveAttempt.payload !== payload) saveAttempt = { payload, id: crypto.randomUUID() };
+      if (!saveAttempt || saveAttempt.payload !== payload)
+        saveAttempt = { payload, id: crypto.randomUUID() };
       const result = await api<{ version: Version }>(`/documents/${detail.value.id}/word-content`, {
-        method: "POST", body: JSON.stringify({ ...body, request_id: saveAttempt.id }), timeoutMs: 120000,
+        method: "POST",
+        body: JSON.stringify({ ...body, request_id: saveAttempt.id }),
+        timeoutMs: 120000,
       });
       versionId = result.version.id;
     } else if (isExcel.value) {
       excelLatest.value = excelEditor.value?.snapshot() || excelLatest.value;
       const body = { base_version_id: editBaseId.value, workbook: excelLatest.value };
       const payload = JSON.stringify(body);
-      if (!saveAttempt || saveAttempt.payload !== payload) saveAttempt = { payload, id: crypto.randomUUID() };
-      const result = await api<{ version: Version }>(`/documents/${detail.value.id}/excel-content`, {
-        method: "POST", body: JSON.stringify({ ...body, request_id: saveAttempt.id }), timeoutMs: 120000,
-      });
+      if (!saveAttempt || saveAttempt.payload !== payload)
+        saveAttempt = { payload, id: crypto.randomUUID() };
+      const result = await api<{ version: Version }>(
+        `/documents/${detail.value.id}/excel-content`,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...body, request_id: saveAttempt.id }),
+          timeoutMs: 120000,
+        }
+      );
       versionId = result.version.id;
     } else {
       const filename = selectedVersion.value.filename;
@@ -545,9 +605,13 @@ async function saveEdit(): Promise<boolean> {
       const ticket = await api<UploadTicket>("/documents/presign-upload", {
         method: "POST",
         body: JSON.stringify({
-          knowledge_base_id: detail.value.knowledge_base_id, document_id: detail.value.id,
-          base_version_id: editBaseId.value, filename, title: detail.value.title,
-          file_size: file.size, content_type: file.type,
+          knowledge_base_id: detail.value.knowledge_base_id,
+          document_id: detail.value.id,
+          base_version_id: editBaseId.value,
+          filename,
+          title: detail.value.title,
+          file_size: file.size,
+          content_type: file.type,
         }),
       });
       await completeUpload(ticket, file);
@@ -794,8 +858,20 @@ onBeforeUnmount(stopIndexPolling);
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="创建人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.created_by_name || '—' }}</template></el-table-column>
-      <el-table-column label="最后修改人" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.updated_by_name || '—' }}</template></el-table-column>
+      <el-table-column
+        label="创建人"
+        min-width="130"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">{{ row.created_by_name || "—" }}</template>
+      </el-table-column>
+      <el-table-column
+        label="最后修改人"
+        min-width="130"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">{{ row.updated_by_name || "—" }}</template>
+      </el-table-column>
       <el-table-column
         label="更新时间"
         width="180"
@@ -904,7 +980,9 @@ onBeforeUnmount(stopIndexPolling);
           accept=".md,.markdown,.txt,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseFile"
         />
-        <div class="form-tip">单文件最大 {{ formatSize(maxFileSize) }}，文件上传后进入索引任务。</div>
+        <div class="form-tip">
+          单文件最大 {{ formatSize(maxFileSize) }}，文件上传后进入索引任务。
+        </div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -953,7 +1031,10 @@ onBeforeUnmount(stopIndexPolling);
           accept=".md,.markdown,.txt,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi"
           @change="chooseReplacementFile"
         />
-        <div class="form-tip">支持 Markdown、TXT、PDF、Word、Excel、图片和视频，单文件最大 {{ formatSize(maxFileSize) }}。</div>
+        <div class="form-tip">
+          支持 Markdown、TXT、PDF、Word、Excel、图片和视频，单文件最大
+          {{ formatSize(maxFileSize) }}。
+        </div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -993,7 +1074,10 @@ onBeforeUnmount(stopIndexPolling);
         <div>
           <h2>{{ detail.title }}</h2>
           <p>
-            {{ detail.status === "active" ? "有效" : "已归档" }} · 创建人：{{ detail.created_by_name || '—' }} · 最后修改人：{{ detail.updated_by_name || '—' }}
+            {{ detail.status === "active" ? "有效" : "已归档" }} · 创建人：{{
+              detail.created_by_name || "—"
+            }}
+            · 最后修改人：{{ detail.updated_by_name || "—" }}
           </p>
         </div>
         <div class="document-actions">
@@ -1036,15 +1120,42 @@ onBeforeUnmount(stopIndexPolling);
         </div>
       </div>
 
-      <section v-if="editing && isWord" class="word-edit-panel">
+      <section
+        v-if="editing && isWord"
+        class="word-edit-panel"
+      >
         <p>编辑 DOCX 正文，保存为新版本。原版本可在版本历史中下载。</p>
-        <WordEditor :key="editBaseId" :content="wordContent" :title="detail.title"
-          :disabled="editorBusy" :save-document="saveEdit" @change="updateWord" />
+        <WordEditor
+          :key="editBaseId"
+          :content="wordContent"
+          :title="detail.title"
+          :disabled="editorBusy"
+          :save-document="saveEdit"
+          @change="updateWord"
+        />
       </section>
-      <section v-else-if="editing && isExcel" class="excel-edit-panel">
+      <section
+        v-else-if="editing && isExcel"
+        class="excel-edit-panel"
+      >
         <p>编辑 Excel 工作簿，保存为新版本。原版本可在版本历史中下载。</p>
-        <ExcelEditor ref="excelEditor" :key="editBaseId" :workbook="excelWorkbook" :title="detail.title" :disabled="editorBusy" @change="updateExcel" />
-        <div class="excel-edit-actions"><el-button type="primary" :loading="editorBusy" @click="saveEdit">保存 Excel 新版本</el-button></div>
+        <ExcelEditor
+          ref="excelEditor"
+          :key="editBaseId"
+          :workbook="excelWorkbook"
+          :title="detail.title"
+          :disabled="editorBusy"
+          @change="updateExcel"
+        />
+        <!-- <div class="excel-edit-actions">
+          <el-button
+            type="primary"
+            :loading="editorBusy"
+            @click="saveEdit"
+          >
+            保存 Excel 新版本
+          </el-button>
+        </div> -->
       </section>
       <div
         v-else-if="editing"
@@ -1065,14 +1176,25 @@ onBeforeUnmount(stopIndexPolling);
         </div>
       </div>
 
-      <WordContent v-else-if="previewKind === 'text' && previewHtml" class="document-preview" :html="previewHtml" />
+      <WordContent
+        v-else-if="previewKind === 'text' && previewHtml"
+        class="document-preview"
+        :html="previewHtml"
+      />
       <div
         v-else-if="previewKind === 'text'"
         class="markdown-body document-preview"
         v-html="renderedPreviewHtml"
       ></div>
-      <section v-else-if="previewKind === 'excel'" class="excel-preview">
-        <ExcelEditor :workbook="excelWorkbook" :title="detail.title" readonly />
+      <section
+        v-else-if="previewKind === 'excel'"
+        class="excel-preview"
+      >
+        <ExcelEditor
+          :workbook="excelWorkbook"
+          :title="detail.title"
+          readonly
+        />
       </section>
       <img
         v-else-if="previewKind === 'image'"
@@ -1153,7 +1275,12 @@ onBeforeUnmount(stopIndexPolling);
     </div>
     <template #footer>
       <div v-if="editing">
-        <el-button :disabled="editorBusy" @click="discardEdits">取消编辑</el-button>
+        <el-button
+          :disabled="editorBusy"
+          @click="discardEdits"
+        >
+          取消编辑
+        </el-button>
         <el-button
           type="primary"
           :loading="editorBusy"
