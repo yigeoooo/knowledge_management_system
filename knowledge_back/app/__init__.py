@@ -5,9 +5,9 @@ from flask import Flask, g, jsonify, request
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.exceptions import HTTPException
 
-from .config import ROOT, configuration
-from .extensions import db, limiter, migrate
-from .http import ApiError, success
+from .core.config import ROOT, configuration
+from .core.extensions import db, limiter, migrate
+from .core.http import ApiError, success
 
 
 def create_app(overrides=None):
@@ -17,24 +17,10 @@ def create_app(overrides=None):
     migrate.init_app(app, db, directory=str(ROOT / "migrations"))
     limiter.init_app(app)
 
-    from .auth import auth
+    from .api.register import register_blueprints
     from .cli import register_cli
-    from .documents import documents
-    from .qa import qa
-    from .retrieval import retrieval
-    from .robots import robots
-    from .roles import roles
-    from .users import users
-    from .workspace import workspace
 
-    app.register_blueprint(auth)
-    app.register_blueprint(documents)
-    app.register_blueprint(qa)
-    app.register_blueprint(roles)
-    app.register_blueprint(retrieval)
-    app.register_blueprint(robots)
-    app.register_blueprint(workspace)
-    app.register_blueprint(users)
+    register_blueprints(app)
     register_cli(app)
 
     @app.before_request

@@ -1,8 +1,9 @@
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from flask_migrate import Migrate
-from flask_sqlalchemy import SQLAlchemy
+"""Compatibility import for Flask extensions.
 
-db = SQLAlchemy()
-migrate = Migrate()
-limiter = Limiter(key_func=get_remote_address, default_limits=[])
+The extension instances live in :mod:`app.core.extensions` so application
+setup and infrastructure code have one canonical import location.
+"""
+
+from .core.extensions import db, limiter, migrate
+
+__all__ = ["db", "limiter", "migrate"]

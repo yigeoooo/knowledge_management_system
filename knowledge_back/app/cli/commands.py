@@ -1,8 +1,10 @@
+"""Application command-line use cases."""
+
 import click
 
-from .auth import password_hasher
-from .extensions import db
-from .models import AuditLog, Role, User
+from ..core.extensions import db
+from ..entities import AuditLog, Role, User
+from ..security.password import password_hasher
 
 
 def register_cli(app):
@@ -11,7 +13,7 @@ def register_cli(app):
     @click.option("--interval", type=click.FloatRange(min=0.1), default=2.0, show_default=True)
     def index_worker(once, interval):
         """Run the PostgreSQL-backed document indexing worker."""
-        from .indexer import run_worker
+        from ..workers.index_worker import run_worker
 
         processed = run_worker(app, once=once, interval=interval)
         if once:
@@ -21,7 +23,7 @@ def register_cli(app):
     @click.option("--username", required=True)
     @click.password_option(confirmation_prompt=True)
     def set_password(username, password):
-        from .models import UserSession, now
+        from ..entities import UserSession, now
 
         user = db.session.scalar(
             db.select(User).where(User.username == username, User.status != "deleted")
@@ -79,3 +81,6 @@ def register_cli(app):
         )
         db.session.commit()
         click.echo(f"用户 {username} 已创建。")
+
+
+__all__ = ["register_cli"]

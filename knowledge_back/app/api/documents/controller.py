@@ -1,0 +1,754 @@
+"""Knowledge-base document storage, versioning, and indexing task interfaces."""
+
+import hashlib
+from io import BytesIO
+from pathlib import PurePath
+from uuid import uuid4
+
+from flask import Blueprint, current_app, g, request
+from sqlalchemy.exc import IntegrityError
+
+from ...api.auth.controller import page_required
+from ...application.audit.operator_service import operator_names
+from ...application.documents.service import (
+    CONTENT_TYPES,
+    DOCUMENT_STATUSES,
+    EXCEL_EXTENSIONS,
+    PREVIEWABLE_EXTENSIONS,
+    TEXT_EXTENSIONS,
+    _api_storage,
+    _document_data,
+    _find_document,
+    _find_knowledge_base,
+    _find_version,
+    _max_document_size,
+    _next_version,
+    _record,
+    _schedule_index_task,
+    _task_data,
+    _text,
+    _uuid,
+    _validate_upload_body,
+    _version_data,
+)
+from ...core.extensions import db
+from ...core.http import ApiError, status_filter, success
+from ...entities import AuditLog, Document, DocumentVersion, IndexTask
+from ...integrations.storage.minio_adapter import (
+    StorageError,
+    delete_object,
+    knowledge_base_bucket,
+    presign_get,
+    presign_put,
+    put_object,
+    read_object,
+    stat_object,
+)
+from ...processors.word.authoring import document_bytes
+
+documents = Blueprint("documents", __name__, url_prefix="/api/v1")
+
+@documents.get("/knowledge-bases/<uuid:knowledge_base_id>/documents")
+@page_required("/documents")
+def list_documents(knowledge_base_id):
+    _find_knowledge_base(knowledge_base_id)
+    # Also recover tasks left pending by a process restart.  The request only
+    # wakes the queue consumer; all indexing work still happens in the worker
+    # thread and the response remains fast.
+    _schedule_index_task()
+    try:
+        page = int(request.args.get("page", "1"))
+        page_size = int(request.args.get("page_size", "20"))
+    except ValueError:
+        raise ApiError("分页参数必须是整数", 422) from None
+    if page < 1 or not 1 <= page_size <= 100:
+        raise ApiError("页码需大于 0，每页条数需在 1–100 之间", 422)
+    keyword = request.args.get("q", "").strip()
+    status = status_filter()
+    if len(keyword) > 200 or "\x00" in keyword:
+        raise ApiError("文档关键词不能超过 200 个字符或包含空字符", 422)
+    if status and status not in DOCUMENT_STATUSES:
+        raise ApiError("文档状态不正确", 422)
+    query = db.select(Document).where(Document.knowledge_base_id == knowledge_base_id)
+    if keyword:
+        query = query.where(Document.title.icontains(keyword, autoescape=True))
+    if status:
+        query = query.where(Document.status == status)
+    result = db.paginate(
+        query.order_by(Document.updated_at.desc(), Document.id),
+        page=page,
+        per_page=page_size,
+        error_out=False,
+    )
+    items = []
+    names = operator_names(result.items, "document")
+    for document in result.items:
+        current = db.session.get(DocumentVersion, document.current_version_id) if document.current_version_id else None
+        # A newly uploaded version is intentionally not current until indexing
+        # succeeds.  Still expose that latest version so the management page
+        # can show PENDING/PROCESSING/FAILED instead of the document's generic
+        # ``active`` status.
+        if current is None:
+            current = db.session.scalar(
+                db.select(DocumentVersion)
+                .where(DocumentVersion.document_id == document.id)
+                .order_by(DocumentVersion.version_no.desc(), DocumentVersion.created_at.desc())
+            )
+        item = _document_data(document, operators=names[document.id])
+        item["current_version"] = _version_data(current) if current else None
+        items.append(item)
+    return success({"items": items, "total": result.total, "page": page, "page_size": page_size,
+                    "max_file_size": _max_document_size()})
+
+
+@documents.get("/documents/<uuid:document_id>")
+@page_required("/documents")
+def document_detail(document_id):
+    document = _find_document(document_id, include_archived=True)
+    return success(_document_data(document, include_versions=True))
+
+
+@documents.put("/documents/<uuid:document_id>")
+@page_required("/documents")
+def update_document(document_id):
+    document = _find_document(document_id, lock=True)
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not body or set(body) - {"title"}:
+        raise ApiError("只支持修改文档标题", 422)
+    title = _text(body.get("title"), "文档标题", 255)
+    if document.title != title:
+        document.title = title
+        _record("document.update", document, {"fields": ["title"]})
+        db.session.commit()
+    return success(_document_data(document))
+
+
+@documents.post("/documents/presign-upload")
+@page_required("/documents")
+def presign_upload():
+    values = _validate_upload_body(request.get_json(silent=True))
+    knowledge_base_id, filename, file_size, title, document_id, base_version_id, content_type = values
+    _find_knowledge_base(knowledge_base_id)
+    document = None
+    if document_id:
+        document = _find_document(document_id, knowledge_base_id=knowledge_base_id, lock=True)
+        latest_version = db.session.scalar(
+            db.select(DocumentVersion)
+            .where(DocumentVersion.document_id == document.id)
+            .order_by(DocumentVersion.version_no.desc())
+        )
+        expected_base = document.current_version_id or (latest_version.id if latest_version else None)
+        if base_version_id != expected_base:
+            raise ApiError("文档已产生新版本，请刷新后重新编辑", 409, 40901)
+    elif base_version_id:
+        raise ApiError("新建文档不能指定基础版本", 422)
+    else:
+        document = Document(
+            id=uuid4(),
+            knowledge_base_id=knowledge_base_id,
+            title=title,
+            status="active",
+            created_by=g.user.id,
+        )
+        db.session.add(document)
+        db.session.flush()
+
+    version = DocumentVersion(
+        id=uuid4(),
+        document_id=document.id,
+        version_no=_next_version(document.id),
+        minio_bucket=knowledge_base_bucket(knowledge_base_id),
+        minio_object_key=(
+            f"knowledge-bases/{knowledge_base_id}/documents/{document.id}/versions/{uuid4()}{PurePath(filename).suffix.lower()}"
+        ),
+        filename=filename,
+        content_type=content_type,
+        file_size=file_size,
+        status="PENDING_UPLOAD",
+        created_by=g.user.id,
+    )
+    db.session.add(version)
+    try:
+        upload_url = _api_storage(
+            presign_put, version.minio_object_key, bucket=version.minio_bucket
+        )
+        _record(
+            "document.upload.prepare",
+            document,
+            {"knowledge_base_id": str(knowledge_base_id), "version_id": str(version.id)},
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return success(
+        {
+            "document": _document_data(document),
+            "version": _version_data(version),
+            "upload_url": upload_url,
+            "upload_method": "PUT",
+            "object_key": version.minio_object_key,
+            "bucket": version.minio_bucket,
+            "required_headers": {"Content-Type": content_type},
+            "expires_in": current_app.config["MINIO_URL_SECONDS"],
+        }
+    ), 201
+
+
+def _complete_version(version):
+    if version.status != "PENDING_UPLOAD":
+        if version.status in {"UPLOADED", "PROCESSING", "INDEXED"}:
+            task = db.session.scalar(
+                db.select(IndexTask)
+                .where(IndexTask.document_version_id == version.id)
+                .order_by(IndexTask.created_at.desc())
+            )
+            if task is None and version.status == "UPLOADED":
+                task = IndexTask(
+                    id=uuid4(), document_version_id=version.id, task_type="INDEX", status="PENDING", attempts=0
+                )
+                db.session.add(task)
+            return task
+        raise ApiError("该版本当前不能完成上传", 409, 40901)
+    info = _api_storage(stat_object, version.minio_object_key, bucket=version.minio_bucket)
+    if int(info.size) != int(version.file_size):
+        raise ApiError("MinIO 文件大小与上传信息不一致", 422, 42202)
+    content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size())
+    if PurePath(version.filename).suffix.lower() in TEXT_EXTENSIONS:
+        try:
+            content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise ApiError("文本文件必须使用 UTF-8 编码", 422, 42202) from None
+    elif PurePath(version.filename).suffix.lower() in EXCEL_EXTENSIONS:
+        try:
+            from ...excel_authoring import parse_workbook
+
+            parse_workbook(version.filename, content)
+        except ApiError:
+            raise
+        except (RuntimeError, ValueError, TypeError) as error:
+            raise ApiError("Excel 文件格式无效或已损坏", 422, 42202) from error
+    version.content_hash = hashlib.sha256(content).hexdigest()
+    version.status = "UPLOADED"
+    version.error_message = None
+    task = IndexTask(
+        id=uuid4(), document_version_id=version.id, task_type="INDEX", status="PENDING", attempts=0
+    )
+    db.session.add(task)
+    return task
+
+
+@documents.post("/documents/create")
+@page_required("/create-document")
+def create_document():
+    body = request.get_json(silent=True)
+    fields = {"knowledge_base_id", "title", "format", "content", "request_id"}
+    if not isinstance(body, dict) or set(body) != fields:
+        raise ApiError("请提供知识库、标题、格式、正文和请求编号", 422)
+    base_id = _uuid(body["knowledge_base_id"], "知识库 ID")
+    document_id = _uuid(body["request_id"], "请求编号")
+    title = _text(body["title"], "文档标题", 200)
+    format_name = body["format"]
+    if format_name not in {"md", "docx", "xlsx"}:
+        raise ApiError("文档格式只能为 Markdown、Word 或 Excel", 422, 42202)
+    content = document_bytes(format_name, body["content"])
+    if len(content) > _max_document_size():
+        raise ApiError("文档超过允许保存的大小", 422, 42202)
+    # Hash the editor payload: DOCX ZIP metadata is time-dependent, so hashing
+    # generated bytes alone would make an otherwise identical retry conflict.
+    import json
+
+    draft_hash = hashlib.sha256(json.dumps(
+        {"format": format_name, "content": body["content"]},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    _find_knowledge_base(base_id)
+    existing = db.session.get(Document, document_id)
+    if existing is not None:
+        audit = db.session.scalar(db.select(AuditLog).where(
+            AuditLog.resource_id == document_id, AuditLog.action == "document.create",
+        ))
+        if (existing.created_by != g.user.id or existing.knowledge_base_id != base_id
+                or existing.title != title or existing.status != "active"
+                or audit is None or audit.detail.get("draft_hash") != draft_hash):
+            raise ApiError("请求编号已被使用，请重新保存", 409, 40901)
+        version = db.session.scalar(db.select(DocumentVersion).where(
+            DocumentVersion.document_id == document_id,
+        ).order_by(DocumentVersion.version_no))
+        return success({"document": _document_data(existing), "version": _version_data(version)})
+
+    document = Document(id=document_id, knowledge_base_id=base_id, title=title,
+                        status="active", created_by=g.user.id)
+    version_id = uuid4()
+    filename = "".join("_" if char in '/\\:*?"<>|' else char for char in title)
+    if filename.lower().endswith(f".{format_name}"):
+        filename = filename[:-(len(format_name) + 1)]
+    filename = f"{filename}.{format_name}"
+    version = DocumentVersion(
+        id=version_id, document_id=document.id, version_no=1,
+        minio_bucket=knowledge_base_bucket(base_id),
+        minio_object_key=f"knowledge-bases/{base_id}/documents/{document.id}/versions/{version_id}.{format_name}",
+        filename=filename, content_type=CONTENT_TYPES[f".{format_name}"], file_size=len(content),
+        status="PENDING_UPLOAD", created_by=g.user.id,
+    )
+    uploaded = False
+    object_key, bucket = version.minio_object_key, version.minio_bucket
+    try:
+        db.session.add(document)
+        db.session.flush()
+        db.session.add(version)
+        _api_storage(put_object, version.minio_object_key, BytesIO(content),
+                     bucket=version.minio_bucket, length=len(content), content_type=version.content_type)
+        uploaded = True
+        _complete_version(version)
+        _record("document.create", document, {
+            "version_id": str(version.id), "format": format_name,
+            "knowledge_base_id": str(base_id), "draft_hash": draft_hash,
+        })
+        db.session.commit()
+    except Exception as error:
+        db.session.rollback()
+        if uploaded:
+            try:
+                delete_object(object_key, bucket=bucket)
+            except StorageError:
+                current_app.logger.warning("Could not clean up failed document creation %s", document_id)
+        if isinstance(error, IntegrityError):
+            raise ApiError("文档正在保存，请稍后重试", 409, 40902) from None
+        raise
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version)}), 201
+
+
+@documents.get("/documents/created/<uuid:document_id>")
+@page_required("/create-document")
+def created_document_status(document_id):
+    document = _find_document(document_id)
+    if document.created_by != g.user.id and g.user.role.code != "super_admin":
+        raise ApiError("文档不存在", 404, 40401)
+    version = db.session.scalar(db.select(DocumentVersion).where(
+        DocumentVersion.document_id == document.id,
+    ).order_by(DocumentVersion.version_no.desc()))
+    return success({"document": _document_data(document), "version": _version_data(version)})
+
+
+@documents.post("/documents/complete")
+@page_required("/documents")
+def complete_upload():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) - {"version_id"} or not body.get("version_id"):
+        raise ApiError("请提供版本 ID", 422)
+    version = _find_version(_uuid(body["version_id"], "版本 ID"), lock=True)
+    document = _find_document(version.document_id, lock=False)
+    task = _complete_version(version)
+    _record("document.upload.complete", document, {"version_id": str(version.id)})
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise ApiError("该版本正在处理，请刷新后重试", 409, 40901) from None
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version), "task": _task_data(task)}), 202
+
+
+@documents.put("/documents/versions/<uuid:version_id>/upload")
+@page_required("/documents")
+def upload_version_fallback(version_id):
+    version = _find_version(version_id, lock=True)
+    document = _find_document(version.document_id)
+    if version.status != "PENDING_UPLOAD":
+        raise ApiError("该版本当前不能上传", 409, 40901)
+    if request.content_length is None or not 1 <= request.content_length <= _max_document_size():
+        raise ApiError("文件大小不正确", 422, 42202)
+    content = request.get_data(cache=False, as_text=False)
+    if len(content) != request.content_length:
+        raise ApiError("文件上传不完整", 422, 42202)
+    if PurePath(version.filename).suffix.lower() in TEXT_EXTENSIONS:
+        try:
+            content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise ApiError("文本文件必须使用 UTF-8 编码", 422, 42202) from None
+    _api_storage(
+        put_object,
+        version.minio_object_key,
+        BytesIO(content),
+        bucket=version.minio_bucket,
+        length=len(content),
+        content_type=version.content_type or "application/octet-stream",
+    )
+    version.file_size = len(content)
+    task = _complete_version(version)
+    _record("document.upload.complete", document, {"version_id": str(version.id), "fallback": True})
+    db.session.commit()
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version), "task": _task_data(task)}), 202
+
+
+@documents.get("/documents/<uuid:document_id>/content")
+@page_required("/documents")
+def document_content(document_id):
+    document = _find_document(document_id, include_archived=True)
+    version_id = request.args.get("version_id") or document.current_version_id
+    if not version_id:
+        raise ApiError("文档还没有可读取的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document.id)
+    if PurePath(version.filename).suffix.lower() not in TEXT_EXTENSIONS:
+        raise ApiError("只有 Markdown 或 TXT 文档支持在线文本编辑", 409, 40901)
+    content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size())
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ApiError("文档内容不是有效的 UTF-8 文本", 422, 42202) from None
+    return success({"document": _document_data(document), "version": _version_data(version), "content": text})
+
+
+def _word_version(document_id, version_id):
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document_id)
+    if PurePath(version.filename).suffix.lower() != ".docx":
+        raise ApiError("在线 Word 编辑支持 DOCX；旧版 DOC 请先另存为 DOCX 后上传", 422, 42202)
+    if version.status in {"PENDING_UPLOAD", "ARCHIVED"}:
+        raise ApiError("该版本尚未上传完成或已归档", 409, 40901)
+    return version
+
+
+@documents.get("/documents/<uuid:document_id>/word-content")
+@page_required("/documents")
+def get_word_content(document_id):
+    from ...word_import import word_content
+
+    document = _find_document(document_id)
+    _find_knowledge_base(document.knowledge_base_id)
+    version = _word_version(document.id, request.args.get("version_id") or document.current_version_id)
+    content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket,
+                           max_size=_max_document_size())
+    return success({"version": _version_data(version), "content": word_content(content)})
+
+
+@documents.post("/documents/<uuid:document_id>/word-content")
+@page_required("/documents")
+def save_word_content(document_id):
+    import json
+
+    from ...word_import import word_content
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"base_version_id", "content", "request_id"}:
+        raise ApiError("请提供基础版本、Word 正文和请求编号", 422)
+    base_id = _uuid(body["base_version_id"], "基础版本 ID")
+    version_id = _uuid(body["request_id"], "请求编号")
+    document = _find_document(document_id, lock=True)
+    _find_knowledge_base(document.knowledge_base_id)
+    draft_hash = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True,
+                                          separators=(",", ":")).encode()).hexdigest()
+    existing = db.session.get(DocumentVersion, version_id)
+    if existing:
+        audit = db.session.scalar(db.select(AuditLog).where(
+            AuditLog.resource_id == document.id, AuditLog.action == "document.word.edit",
+            AuditLog.detail["version_id"].as_string() == str(version_id),
+        ))
+        if (existing.document_id != document.id or existing.created_by != g.user.id
+                or audit is None or audit.detail.get("draft_hash") != draft_hash):
+            raise ApiError("请求编号已被使用，请重新保存", 409, 40901)
+        return success({"document": _document_data(document), "version": _version_data(existing)})
+    latest = db.session.scalar(db.select(DocumentVersion).where(
+        DocumentVersion.document_id == document.id,
+    ).order_by(DocumentVersion.version_no.desc()))
+    if latest is None or latest.id != base_id:
+        raise ApiError("文档已产生新版本，请保留当前编辑内容，重新打开最新版本后修改", 409, 40901)
+    base = _word_version(document.id, base_id)
+    source = _api_storage(read_object, base.minio_object_key, bucket=base.minio_bucket,
+                          max_size=_max_document_size())
+    # Enforce the same importability check as GET, even when a caller skips it.
+    word_content(source)
+    content = document_bytes("docx", body["content"], source=source)
+    if len(content) > _max_document_size():
+        raise ApiError("文档超过允许保存的大小", 422, 42202)
+    version = DocumentVersion(
+        id=version_id, document_id=document.id, version_no=_next_version(document.id),
+        minio_bucket=knowledge_base_bucket(document.knowledge_base_id),
+        minio_object_key=f"knowledge-bases/{document.knowledge_base_id}/documents/{document.id}/versions/{version_id}.docx",
+        filename=base.filename, content_type=CONTENT_TYPES[".docx"], file_size=len(content),
+        status="PENDING_UPLOAD", created_by=g.user.id,
+    )
+    uploaded = False
+    object_key, bucket = version.minio_object_key, version.minio_bucket
+    try:
+        db.session.add(version)
+        _api_storage(put_object, object_key, BytesIO(content), bucket=bucket,
+                     length=len(content), content_type=version.content_type)
+        uploaded = True
+        _complete_version(version)
+        _record("document.word.edit", document, {
+            "version_id": str(version.id), "base_version_id": str(base.id), "draft_hash": draft_hash,
+        })
+        db.session.commit()
+    except Exception as error:
+        db.session.rollback()
+        if uploaded:
+            try:
+                delete_object(object_key, bucket=bucket)
+            except StorageError:
+                current_app.logger.warning("Could not clean up failed Word edit %s", version_id)
+        if isinstance(error, IntegrityError):
+            raise ApiError("文档正在保存，请稍后重试", 409, 40902) from None
+        raise
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version)}), 201
+
+
+def _excel_version(document_id, version_id):
+    if not version_id:
+        raise ApiError("文档还没有可读取的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document_id)
+    if PurePath(version.filename).suffix.lower() not in EXCEL_EXTENSIONS:
+        raise ApiError("在线 Excel 编辑仅支持 XLS 或 XLSX 文件", 422, 42202)
+    if version.status in {"PENDING_UPLOAD", "ARCHIVED"}:
+        raise ApiError("该版本尚未上传完成或已归档", 409, 40901)
+    return version
+
+
+@documents.get("/documents/<uuid:document_id>/excel-content")
+@page_required("/documents")
+def get_excel_content(document_id):
+    from ...excel_authoring import parse_workbook
+
+    document = _find_document(document_id)
+    _find_knowledge_base(document.knowledge_base_id)
+    version = _excel_version(document.id, request.args.get("version_id") or document.current_version_id)
+    content = _api_storage(
+        read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size()
+    )
+    try:
+        workbook = parse_workbook(version.filename, content)
+    except (RuntimeError, ValueError, TypeError) as error:
+        raise ApiError("Excel 文件格式解析失败，请下载原文件查看", 422, 42202) from error
+    return success({"version": _version_data(version), "workbook": workbook})
+
+
+@documents.post("/documents/<uuid:document_id>/excel-content")
+@page_required("/documents")
+def save_excel_content(document_id):
+    import json
+
+    from ...excel_authoring import workbook_bytes
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"base_version_id", "workbook", "request_id"}:
+        raise ApiError("请提供基础版本、Excel 工作簿和请求编号", 422)
+    base_id = _uuid(body["base_version_id"], "基础版本 ID")
+    version_id = _uuid(body["request_id"], "请求编号")
+    document = _find_document(document_id, lock=True)
+    _find_knowledge_base(document.knowledge_base_id)
+    draft_hash = hashlib.sha256(
+        json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    existing = db.session.get(DocumentVersion, version_id)
+    if existing:
+        audit = db.session.scalar(
+            db.select(AuditLog).where(
+                AuditLog.resource_id == document.id,
+                AuditLog.action == "document.excel.edit",
+                AuditLog.detail["version_id"].as_string() == str(version_id),
+            )
+        )
+        if (
+            existing.document_id != document.id
+            or existing.created_by != g.user.id
+            or audit is None
+            or audit.detail.get("draft_hash") != draft_hash
+        ):
+            raise ApiError("请求编号已被使用，请重新保存", 409, 40901)
+        return success({"document": _document_data(document), "version": _version_data(existing)})
+    latest = db.session.scalar(
+        db.select(DocumentVersion)
+        .where(DocumentVersion.document_id == document.id)
+        .order_by(DocumentVersion.version_no.desc())
+    )
+    if latest is None or latest.id != base_id:
+        raise ApiError("文档已产生新版本，请保留当前编辑内容，重新打开最新版本后修改", 409, 40901)
+    base = _excel_version(document.id, base_id)
+    try:
+        content = workbook_bytes(body["workbook"])
+    except ApiError:
+        raise
+    except (RuntimeError, ValueError, TypeError) as error:
+        raise ApiError("Excel 工作簿格式不正确", 422, 42202) from error
+    if len(content) > _max_document_size():
+        raise ApiError("文档超过允许保存的大小", 422, 42202)
+    original_stem = PurePath(base.filename).stem
+    filename = f"{original_stem}.xlsx"
+    version = DocumentVersion(
+        id=version_id,
+        document_id=document.id,
+        version_no=_next_version(document.id),
+        minio_bucket=knowledge_base_bucket(document.knowledge_base_id),
+        minio_object_key=(
+            f"knowledge-bases/{document.knowledge_base_id}/documents/{document.id}/versions/{version_id}.xlsx"
+        ),
+        filename=filename,
+        content_type=CONTENT_TYPES[".xlsx"],
+        file_size=len(content),
+        status="PENDING_UPLOAD",
+        created_by=g.user.id,
+    )
+    uploaded = False
+    object_key, bucket = version.minio_object_key, version.minio_bucket
+    try:
+        db.session.add(version)
+        _api_storage(
+            put_object,
+            object_key,
+            BytesIO(content),
+            bucket=bucket,
+            length=len(content),
+            content_type=version.content_type,
+        )
+        uploaded = True
+        _complete_version(version)
+        _record(
+            "document.excel.edit",
+            document,
+            {"version_id": str(version.id), "base_version_id": str(base.id), "draft_hash": draft_hash},
+        )
+        db.session.commit()
+    except Exception as error:
+        db.session.rollback()
+        if uploaded:
+            try:
+                delete_object(object_key, bucket=bucket)
+            except StorageError:
+                current_app.logger.warning("Could not clean up failed Excel edit %s", version_id)
+        if isinstance(error, IntegrityError):
+            raise ApiError("文档正在保存，请稍后重试", 409, 40902) from None
+        raise
+    _schedule_index_task()
+    return success({"document": _document_data(document), "version": _version_data(version)}), 201
+
+
+@documents.get("/documents/<uuid:document_id>/preview-url")
+@page_required("/documents")
+def document_preview_url(document_id):
+    document = _find_document(document_id, include_archived=True)
+    version_id = request.args.get("version_id") or document.current_version_id
+    if not version_id:
+        raise ApiError("文档还没有可预览的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document.id)
+    extension = PurePath(version.filename).suffix.lower()
+    if extension not in PREVIEWABLE_EXTENSIONS:
+        raise ApiError("该文件类型暂不支持在线预览，请下载后查看", 409, 40901)
+    url = _api_storage(
+        presign_get,
+        version.minio_object_key,
+        version.filename,
+        bucket=version.minio_bucket,
+        inline=True,
+        content_type=version.content_type,
+    )
+    return success({"preview_url": url, "expires_in": current_app.config["MINIO_URL_SECONDS"], "version": _version_data(version)})
+
+
+@documents.get("/documents/<uuid:document_id>/text-preview")
+@page_required("/documents")
+def document_text_preview(document_id):
+    document = _find_document(document_id, include_archived=True)
+    version_id = request.args.get("version_id") or document.current_version_id
+    if not version_id:
+        raise ApiError("文档还没有可预览的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document.id)
+    extension = PurePath(version.filename).suffix.lower()
+    if extension not in {".pdf", ".docx"} | EXCEL_EXTENSIONS:
+        raise ApiError("该文件类型不支持文本预览", 409, 40901)
+    content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket, max_size=_max_document_size())
+    try:
+        from ...indexer import _extract_text
+
+        text = _extract_text(version.filename, content) or ""
+    except (RuntimeError, ValueError) as error:
+        raise ApiError(str(error), 422, 42202) from error
+    result = {"document": _document_data(document), "version": _version_data(version), "content": text}
+    if extension == ".docx":
+        try:
+            from ...docx_preview import docx_html
+
+            result["html"] = docx_html(content)
+        except (ValueError, RuntimeError, TypeError) as error:
+            raise ApiError("Word 文档预览格式解析失败，请下载原文件查看", 422, 42202) from error
+    elif extension in EXCEL_EXTENSIONS:
+        try:
+            from ...excel_authoring import parse_workbook, workbook_text
+
+            result["content"] = workbook_text(parse_workbook(version.filename, content))
+        except (RuntimeError, ValueError, TypeError) as error:
+            raise ApiError("Excel 文档预览格式解析失败，请下载原文件查看", 422, 42202) from error
+    return success(result)
+
+
+@documents.get("/documents/<uuid:document_id>/download-url")
+@page_required("/documents")
+def document_download_url(document_id):
+    document = _find_document(document_id, include_archived=True)
+    version_id = request.args.get("version_id") or document.current_version_id
+    if not version_id:
+        raise ApiError("文档还没有可下载的版本", 404, 40401)
+    version = _find_version(_uuid(version_id, "版本 ID"), document_id=document.id)
+    url = _api_storage(presign_get, version.minio_object_key, version.filename, bucket=version.minio_bucket)
+    return success({"download_url": url, "expires_in": current_app.config["MINIO_URL_SECONDS"], "version": _version_data(version)})
+
+
+@documents.post("/documents/<uuid:document_id>/reindex")
+@page_required("/documents")
+def reindex_document(document_id):
+    document = _find_document(document_id, lock=True)
+    version_id = document.current_version_id or db.session.scalar(
+        db.select(DocumentVersion.id)
+        .where(DocumentVersion.document_id == document.id)
+        .order_by(DocumentVersion.version_no.desc())
+    )
+    if not version_id:
+        raise ApiError("文档没有可处理的版本", 409, 40901)
+    version = _find_version(version_id, document_id=document.id, lock=True)
+    existing = db.session.scalar(
+        db.select(IndexTask)
+        .where(IndexTask.document_version_id == version.id, IndexTask.status.in_(("PENDING", "RUNNING")))
+        .order_by(IndexTask.created_at.desc())
+    )
+    if existing:
+        _schedule_index_task()
+        return success({"task": _task_data(existing), "version": _version_data(version)})
+    version.status = "UPLOADED"
+    version.error_message = None
+    task = IndexTask(id=uuid4(), document_version_id=version.id, task_type="REINDEX", status="PENDING")
+    db.session.add(task)
+    _record("document.reindex", document, {"version_id": str(version.id)})
+    db.session.commit()
+    _schedule_index_task()
+    return success({"task": _task_data(task), "version": _version_data(version)}), 202
+
+
+@documents.get("/tasks/<uuid:task_id>")
+@page_required("/documents")
+def task_detail(task_id):
+    task = db.session.get(IndexTask, task_id)
+    if task is None:
+        raise ApiError("索引任务不存在", 404, 40401)
+    return success(_task_data(task))
+
+
+@documents.delete("/documents/<uuid:document_id>")
+@page_required("/documents")
+def archive_document(document_id):
+    document = _find_document(document_id, lock=True)
+    versions = db.session.scalars(
+        db.select(DocumentVersion).where(DocumentVersion.document_id == document.id).with_for_update()
+    ).all()
+    document.status = "archived"
+    document.current_version_id = None
+    for version in versions:
+        if version.status != "ARCHIVED":
+            db.session.add(
+                IndexTask(id=uuid4(), document_version_id=version.id, task_type="DELETE", status="PENDING")
+            )
+    _record("document.archive", document, {"version_count": len(versions)})
+    db.session.commit()
+    _schedule_index_task()
+    return success({"id": str(document.id), "status": document.status}), 202
