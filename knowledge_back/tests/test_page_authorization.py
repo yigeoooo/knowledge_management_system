@@ -70,7 +70,7 @@ def test_assigned_management_page_allows_writes_without_opening_other_pages(app,
     )
     grant(app, "/robots", "/knowledge-bases")
     response = client.post(
-        "/api/v1/robots", headers=reader, json={"serial_no": "R-1", "name": "设备"}
+        "/api/v1/robots", headers=reader, json={"serial_no": "R-1", "name": "设备", "knowledge_base_id": client.get("/api/v1/robots/knowledge-base-options", headers=reader).json["data"]["items"][0]["id"]}
     )
     assert response.status_code == 201
     robot_id = response.get_json()["data"]["id"]
@@ -125,6 +125,15 @@ def test_qa_requires_its_page_permission(app, client, reader):
     )
 
 
+def test_history_and_robot_options_use_their_own_page_permissions(app, client, reader):
+    grant(app, "/qa-logs", "/robots")
+    assert client.get("/api/v1/admin/qa-users", headers=reader).status_code == 200
+    assert client.get("/api/v1/admin/qa-robots", headers=reader).status_code == 200
+    assert client.get("/api/v1/robots/knowledge-base-options", headers=reader).status_code == 200
+    assert client.get("/api/v1/users", headers=reader).status_code == 403
+    assert client.get("/api/v1/knowledge-bases", headers=reader).status_code == 403
+
+
 def test_super_admin_bypasses_page_grants_and_receives_all_active_routes(app, client):
     with app.app_context():
         role = db.session.scalar(db.select(Role).where(Role.code == "super_admin"))
@@ -137,10 +146,11 @@ def test_super_admin_bypasses_page_grants_and_receives_all_active_routes(app, cl
     )
     data = response.get_json()["data"]
     assert "/create-document" in {page["route_path"] for page in data["pages"]}
-    assert len(data["pages"]) == 13
+    assert "/robot-qa" in {page["route_path"] for page in data["pages"]}
+    assert len(data["pages"]) == 14
     headers = {"Authorization": f"Bearer {data['access_token']}"}
     assert client.get("/api/v1/users", headers=headers).status_code == 200
     assert (
-        client.post("/api/v1/robots", headers=headers, json={"serial_no": str(uuid4())}).status_code
+        client.post("/api/v1/robots", headers=headers, json={"serial_no": str(uuid4()), "knowledge_base_id": client.get("/api/v1/robots/knowledge-base-options", headers=headers).json["data"]["items"][0]["id"]}).status_code
         == 201
     )

@@ -11,6 +11,7 @@ from ..core.extensions import db
 from ..schema_comments import describe_schema
 from .audit import AuditLog
 from .base import Record, now
+from .conversation import QAConversation
 from .document import Document, DocumentChunk, DocumentVersion, IndexTask
 from .identity import Page, Role, RolePagePermission, User, UserSession
 from .knowledge_base import KnowledgeBase
@@ -27,6 +28,7 @@ __all__ = [
     "IndexTask",
     "KnowledgeBase",
     "Page",
+    "QAConversation",
     "QALog",
     "Record",
     "Robot",

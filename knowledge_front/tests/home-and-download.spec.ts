@@ -138,6 +138,7 @@ test('robot management supports create, detail, edit, and disable', async ({ pag
   const robotId = '00000000-0000-4000-8000-000000000010'
   let robot = {
     id: robotId,
+    knowledge_base_id: 'base', knowledge_base_name: '宜宾知识库', binding_version: 1,
     serial_no: 'ROBOT-001',
     name: '一号机器人',
     description: '初始设备',
@@ -161,6 +162,8 @@ test('robot management supports create, detail, edit, and disable', async ({ pag
           component_key: 'RobotManagement', page_type: 'menu', sort_order: 1, is_visible: true,
         }],
       }
+    } else if (url.pathname === '/api/v1/robots/knowledge-base-options') {
+      data = { items: [{ id: 'base', name: '宜宾知识库' }], total: 1 }
     } else if (url.pathname === '/api/v1/robots' && request.method() === 'GET') {
       const status = url.searchParams.get('status')
       const q = (url.searchParams.get('q') || '').toLowerCase()
@@ -192,6 +195,8 @@ test('robot management supports create, detail, edit, and disable', async ({ pag
   await page.getByPlaceholder('例如：ROBOT-001').fill('ROBOT-001')
   await page.getByPlaceholder('例如：一号巡检机器人').fill('一号机器人')
   await page.getByPlaceholder('说明设备用途或所在场景').fill('初始设备')
+  await page.locator('.el-dialog .el-select').first().click()
+  await page.getByRole('option', { name: '宜宾知识库', exact: true }).click()
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.getByText('一号机器人')).toBeVisible()
 

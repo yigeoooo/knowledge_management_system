@@ -37,7 +37,7 @@ def _json_object(content):
     return result
 
 
-def complete_json(
+def _complete_json_http(
     instruction: str,
     material: dict,
     *,
@@ -94,4 +94,38 @@ def complete_json(
     except (TimeoutError, URLError, OSError):
         raise ChatError("问答模型连接失败或超时，请稍后重试") from None
     except (ValueError, KeyError, IndexError, TypeError):
+        raise ChatFormatError("问答模型返回格式不正确") from None
+
+
+def complete_json(instruction, material, *, max_tokens=2048, timeout_seconds=None):
+    """Keep provider details and framework messages behind the existing interface."""
+    if not current_app.config.get("LANGCHAIN_CHAT_ENABLED", False):
+        return _complete_json_http(instruction, material, max_tokens=max_tokens, timeout_seconds=timeout_seconds)
+    from langchain_deepseek import ChatDeepSeek
+    from openai import APIError, APITimeoutError
+
+    config = current_app.config
+    base = config["DEEPSEEK_BASE_URL"].strip().rstrip("/")
+    key, model = config["DEEPSEEK_API_KEY"].strip(), config["DEEPSEEK_CHAT_MODEL"].strip()
+    if urlparse(base).scheme not in {"http", "https"} or not urlparse(base).netloc or not model or key in {"", "replace-me", "replace-with-secret"}:
+        raise ChatError("DeepSeek 问答服务未配置，请联系管理员")
+    timeout = min(90, max(5, config["DEEPSEEK_TIMEOUT_SECONDS"]), timeout_seconds or 90)
+    if timeout < 1:
+        raise ChatError("问答处理超时，请稍后重试")
+    try:
+        client = ChatDeepSeek(model=model, api_key=key, api_base=base,
+                              timeout=timeout, max_retries=0, temperature=0.1, max_tokens=max_tokens)
+        result = client.bind(response_format={"type": "json_object"}).invoke([
+            ("system", instruction), ("human", json.dumps(material, ensure_ascii=False)),
+        ], config={"callbacks": []})
+        if result.response_metadata.get("finish_reason") != "stop":
+            raise ChatFormatError("问答模型未完整生成结果")
+        if len(str(result.content)) > 1_048_576:
+            raise ChatFormatError("问答模型返回的内容过长")
+        return _json_object(result.content), model
+    except APITimeoutError:
+        raise ChatError("问答模型连接超时，请稍后重试") from None
+    except APIError:
+        raise ChatError("问答模型服务暂不可用，请稍后重试") from None
+    except (ValueError, KeyError, TypeError):
         raise ChatFormatError("问答模型返回格式不正确") from None

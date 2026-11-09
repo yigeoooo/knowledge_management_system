@@ -17,9 +17,9 @@ export const apiBase = base
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code = 0) { super(message) }
 }
-interface ApiRequestOptions extends RequestInit { timeoutMs?: number }
+interface ApiRequestOptions extends RequestInit { timeoutMs?: number; responseType?: 'json' | 'blob' }
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-  const { timeoutMs = 15000, signal, ...init } = options
+  const { timeoutMs = 15000, signal, responseType = 'json', ...init } = options
   const timeout = AbortSignal.timeout(timeoutMs)
   let response: Response
   try {
@@ -30,6 +30,12 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   } catch {
     if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
     throw new ApiError(timeout.aborted ? '请求超时，请点击重试获取结果' : '连接服务失败，请检查网络后重试', 0)
+  }
+  if (response.ok && responseType === 'blob') {
+    try { return await response.blob() as T } catch {
+      if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
+      throw new ApiError(timeout.aborted ? '下载超时，请重试' : '文件下载中断，请重试', 0)
+    }
   }
   const body = await response.json().catch(() => {
     if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')

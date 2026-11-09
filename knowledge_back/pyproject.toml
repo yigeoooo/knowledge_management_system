@@ -19,6 +19,8 @@ dependencies = [
   "markdown-it-py>=4,<5",
   "openpyxl>=3.1,<4",
   "xlrd>=2.0,<3",
+  "langgraph>=1.0,<2",
+  "langchain-deepseek>=1.0,<2",
 ]
 
 [dependency-groups]

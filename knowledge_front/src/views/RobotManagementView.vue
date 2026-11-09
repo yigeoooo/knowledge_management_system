@@ -12,6 +12,7 @@ interface Robot {
   serial_no: string;
   name: string | null;
   description: string | null;
+  knowledge_base_id: string | null; knowledge_base_name: string | null; binding_version: number; knowledge_base_status: string | null;
   status: RobotStatus;
   last_request_at: string | null;
   created_by: string | null;
@@ -21,11 +22,13 @@ interface Robot {
 interface RobotPage { items: Robot[]; total: number }
 
 const rows = ref<Robot[]>([]);
+const baseOptions = ref<{ id: string; name: string }[]>([]);
+async function loadBaseOptions() { baseOptions.value = (await api<{items: typeof baseOptions.value}>("/robots/knowledge-base-options")).items; }
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
-const filters = reactive({ q: "", status: "" });
-const applied = reactive({ q: "", status: "" });
+const filters = reactive({ q: "", status: "", knowledge_base_id: "" });
+const applied = reactive({ q: "", status: "", knowledge_base_id: "" });
 const loading = ref(false);
 const listError = ref("");
 const actionId = ref("");
@@ -37,7 +40,7 @@ const saving = ref(false);
 const editorError = ref("");
 const editing = ref<Robot | null>(null);
 const formRef = ref<FormInstance>();
-const form = reactive({ serial_no: "", name: "", description: "", status: "active" as RobotStatus });
+const form = reactive({ serial_no: "", name: "", description: "", knowledge_base_id: "", status: "active" as RobotStatus });
 let editorRequest = 0;
 
 const detailOpen = ref(false);
@@ -47,6 +50,7 @@ const detail = ref<Robot | null>(null);
 let detailRequest = 0;
 
 const rules: FormRules = {
+  knowledge_base_id: [{ required: true, message: "请选择绑定知识库", trigger: "change" }],
   serial_no: [
     { required: true, whitespace: true, message: "请输入机器人序列号", trigger: "blur" },
     { max: 100, message: "序列号不能超过 100 个字符", trigger: "blur" },
@@ -95,12 +99,14 @@ async function loadRobots() {
 function search() {
   applied.q = filters.q.trim();
   applied.status = filters.status;
+  applied.knowledge_base_id = filters.knowledge_base_id;
   page.value = 1;
   void loadRobots();
 }
 function resetFilters() {
   filters.q = "";
   filters.status = "";
+  filters.knowledge_base_id = "";
   search();
 }
 function resizePage() {
@@ -111,13 +117,14 @@ function resizePage() {
 async function openEditor(robot?: Robot) {
   const current = ++editorRequest;
   editing.value = robot || null;
-  Object.assign(form, { serial_no: "", name: "", description: "", status: "active" as RobotStatus });
+  Object.assign(form, { serial_no: "", name: "", description: "", knowledge_base_id: "", status: "active" as RobotStatus });
   editorError.value = "";
   editorLoading.value = true;
   editorOpen.value = true;
   await nextTick();
   formRef.value?.clearValidate();
   try {
+    await loadBaseOptions();
     const fresh = robot ? await api<Robot>(`/robots/${robot.id}`) : null;
     if (current !== editorRequest || !editorOpen.value) return;
     editing.value = fresh;
@@ -125,6 +132,7 @@ async function openEditor(robot?: Robot) {
       serial_no: fresh.serial_no,
       name: fresh.name || "",
       description: fresh.description || "",
+      knowledge_base_id: fresh.knowledge_base_id || "",
       status: fresh.status,
     });
   } catch (error) {
@@ -148,7 +156,13 @@ async function saveRobot() {
         );
       } catch { return; }
     }
+    if (editing.value && form.knowledge_base_id !== editing.value.knowledge_base_id) {
+      try { await ElMessageBox.confirm("换绑后旧会话将关闭，进行中的问答会取消；新对话使用新知识库。", "确认换绑知识库", { confirmButtonText: "确认换绑", cancelButtonText: "取消", type: "warning" }); } catch { return; }
+    }
     const body = {
+      ...(!editing.value || form.knowledge_base_id !== editing.value.knowledge_base_id ? {
+        knowledge_base_id: form.knowledge_base_id, expected_binding_version: editing.value?.binding_version,
+      } : {}),
       serial_no: form.serial_no.trim(),
       name: form.name.trim() || null,
       description: form.description.trim() || null,
@@ -209,7 +223,7 @@ async function disableRobot(robot: Robot) {
 
 watch(editorOpen, (open) => { if (!open) ++editorRequest; });
 watch(detailOpen, (open) => { if (!open) ++detailRequest; });
-onMounted(loadRobots);
+onMounted(() => { void loadRobots(); void loadBaseOptions().catch(e => ElMessage.error((e as Error).message)); });
 onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
 </script>
 
@@ -229,6 +243,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
       <el-form-item label="序列号或名称">
         <el-input v-model="filters.q" placeholder="输入序列号或名称" :prefix-icon="Search" maxlength="200" clearable @clear="search" />
       </el-form-item>
+      <el-form-item label="知识库"><el-select v-model="filters.knowledge_base_id" placeholder="全部知识库" clearable value-on-clear="" @change="search"><el-option v-for="base in baseOptions" :key="base.id" :label="base.name" :value="base.id" /></el-select></el-form-item>
       <el-form-item label="状态">
         <el-select v-model="filters.status" placeholder="全部状态" clearable value-on-clear="" @change="search">
           <el-option label="启用" value="active" /><el-option label="停用" value="disabled" />
@@ -248,6 +263,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
       <el-table-column label="机器人" min-width="220">
         <template #default="{ row }"><div class="robot-cell"><el-avatar :size="34"><el-icon><Cpu /></el-icon></el-avatar><div><strong>{{ row.name || "未命名机器人" }}</strong><span>{{ row.serial_no }}</span></div></div></template>
       </el-table-column>
+      <el-table-column label="绑定知识库" min-width="180"><template #default="{ row }">{{ row.knowledge_base_name || "待绑定" }}</template></el-table-column>
       <el-table-column prop="description" label="描述" min-width="250" show-overflow-tooltip />
       <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
       <el-table-column label="最近请求" width="180"><template #default="{ row }">{{ formatTime(row.last_request_at) }}</template></el-table-column>
@@ -268,6 +284,7 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
     <el-alert v-if="editorError" :title="editorError" type="error" :closable="false" show-icon />
     <el-form ref="formRef" v-loading="editorLoading" :model="form" :rules="rules" label-position="top" @submit.prevent="saveRobot">
       <el-form-item label="机器人序列号" prop="serial_no"><el-input v-model="form.serial_no" maxlength="100" placeholder="例如：ROBOT-001" /></el-form-item>
+      <el-form-item label="绑定知识库" prop="knowledge_base_id"><el-select v-model="form.knowledge_base_id" placeholder="请选择知识库" filterable style="width:100%"><el-option v-if="editing?.knowledge_base_id && !baseOptions.some(b => b.id === editing?.knowledge_base_id)" :value="editing.knowledge_base_id" :label="`${editing.knowledge_base_name}（已停用）`" disabled /><el-option v-for="base in baseOptions" :key="base.id" :label="base.name" :value="base.id" /></el-select></el-form-item>
       <el-form-item label="机器人名称" prop="name"><el-input v-model="form.name" maxlength="200" placeholder="例如：一号巡检机器人" /></el-form-item>
       <el-form-item label="描述" prop="description"><el-input v-model="form.description" type="textarea" :rows="4" maxlength="2000" show-word-limit placeholder="说明设备用途或所在场景" /></el-form-item>
       <el-form-item label="状态" prop="status"><el-select v-model="form.status" style="width: 100%"><el-option label="启用" value="active" /><el-option label="停用" value="disabled" /></el-select></el-form-item>
@@ -280,7 +297,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
     <div v-loading="detailLoading" class="robot-detail" v-if="detail">
       <div class="robot-detail-icon"><el-avatar :size="64"><el-icon><Cpu /></el-icon></el-avatar><div><h2>{{ detail.name || "未命名机器人" }}</h2><el-tag :type="statusType(detail.status)">{{ statusLabel(detail.status) }}</el-tag></div></div>
       <el-descriptions :column="1" border>
-        <el-descriptions-item label="序列号">{{ detail.serial_no }}</el-descriptions-item>
+        <el-descriptions-item label="绑定知识库">{{ detail.knowledge_base_name || "待绑定" }}</el-descriptions-item>
+      <el-descriptions-item label="序列号">{{ detail.serial_no }}</el-descriptions-item>
         <el-descriptions-item label="描述">{{ detail.description || "—" }}</el-descriptions-item>
         <el-descriptions-item label="最近请求">{{ formatTime(detail.last_request_at) }}</el-descriptions-item>
         <el-descriptions-item label="注册时间">{{ formatTime(detail.created_at) }}</el-descriptions-item>

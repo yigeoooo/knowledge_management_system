@@ -90,7 +90,8 @@ def test_reviewer_format_failure_repairs_reviewer_without_regenerating_draft(con
     assert repaired_review["correction"]
 
 
-def test_source_id_existence_does_not_allow_unsupported_facts(context, monkeypatch):
+@pytest.mark.parametrize("robot", [False, True])
+def test_source_id_existence_does_not_allow_unsupported_facts(context, monkeypatch, robot):
     def completion(_prompt, material, **_options):
         if "draft" in material:
             return review_all(material, supported=False, complete=False)
@@ -99,12 +100,13 @@ def test_source_id_existence_does_not_allow_unsupported_facts(context, monkeypat
         }, "fixture"
 
     monkeypatch.setattr(grounding, "complete_json", completion)
-    answer, _, _, status = grounding.generate_answer("原始数据会怎样？", context)
+    answer, _, _, status = grounding.generate_answer("原始数据会怎样？", context, robot=robot)
     assert status == "NO_EVIDENCE"
     assert "自动删除" not in answer
 
 
-def test_partial_answer_keeps_only_supported_blocks_after_repair(context, monkeypatch):
+@pytest.mark.parametrize("robot", [False, True])
+def test_partial_answer_keeps_only_supported_blocks_after_repair(context, monkeypatch, robot):
     def completion(_prompt, material, **_options):
         if "draft" in material:
             return {
@@ -119,9 +121,11 @@ def test_partial_answer_keeps_only_supported_blocks_after_repair(context, monkey
         }, "fixture"
 
     monkeypatch.setattr(grounding, "complete_json", completion)
-    answer, _, _, status = grounding.generate_answer("流程和精度如何？", context)
+    answer, _, _, status = grounding.generate_answer("流程和精度如何？", context, robot=robot)
     assert status == "PARTIAL"
     assert "start.sh" in answer and "完美精度" not in answer
+    if robot:
+        assert answer.endswith("其余内容暂无充分依据。")
 
 
 def test_service_errors_are_not_misreported_as_no_evidence(context, monkeypatch):
@@ -137,3 +141,53 @@ def test_large_fenced_command_is_not_split_between_passages(context):
     context[0]["content"] = "准备操作。\n\n" + command
     _, passages = grounding._passages(context)
     assert command in [item["text"] for item in passages.values()]
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        "| 步骤 | 操作 |\n| --- | --- |\n| 1 | 连接 USB |",
+        "## 使用步骤\n\n连接 USB。",
+        "1. 连接 USB。\n2. 启动程序。",
+        "```sh\nstart.sh\n```",
+        "<table><tr><td>连接 USB</td></tr></table>",
+        "连接 USB 线，再启动程序。" * 30,
+    ],
+)
+def test_robot_rewrites_rich_or_long_draft_then_reviews_the_short_answer(
+    context, monkeypatch, draft
+):
+    materials = []
+    expected = "先连接 USB 线，再运行 start.sh。原始数据集不会修改。"
+
+    def completion(prompt, material, **options):
+        materials.append(material)
+        if "draft" in material:
+            assert material["draft"][0]["text"] == expected
+            assert material["draft"][0]["evidence"][0]["text"] == context[0]["content"]
+            return review_all(material)
+        assert prompt == grounding.ROBOT_ANSWER_PROMPT
+        text = draft if len(materials) == 1 else expected
+        if len(materials) > 1:
+            assert material["correction"]
+        return {"blocks": [{"text": text, "evidence_ids": ["1.1"]}]}, "fixture"
+
+    monkeypatch.setattr(grounding, "complete_json", completion)
+    answer, sources, _, status = grounding.generate_answer("如何使用？", context, robot=True)
+    assert status == "SUCCESS" and sources == context
+    assert answer == expected + "\n\n[1]"
+    assert len(materials) == 3  # Initial draft, one repair, independent evidence review.
+
+
+def test_robot_never_returns_table_when_repair_still_has_a_table(context, monkeypatch):
+    completion = Mock(
+        return_value=(
+            {"blocks": [{"text": "| 操作 |\n| --- |\n| 连接 USB |", "evidence_ids": ["1.1"]}]},
+            "fixture",
+        )
+    )
+    monkeypatch.setattr(grounding, "complete_json", completion)
+    answer, _, _, status = grounding.generate_answer("如何使用？", context, robot=True)
+    assert status == "SOURCES_ONLY"
+    assert answer == grounding.ROBOT_FORMAT_NOTICE
+    assert completion.call_count == 2

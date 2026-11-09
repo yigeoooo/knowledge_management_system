@@ -3,6 +3,7 @@
 from flask import Flask
 
 from .auth.controller import auth
+from .conversations.controller import conversations
 from .documents.controller import documents
 from .qa.controller import qa
 from .retrieval.controller import retrieval
@@ -15,7 +16,7 @@ from .workspace.controller import workspace
 def register_blueprints(app: Flask) -> None:
     """Attach the public route modules in one explicit place."""
 
-    for blueprint in (auth, documents, qa, roles, retrieval, robots, workspace, users):
+    for blueprint in (auth, conversations, documents, qa, roles, retrieval, robots, workspace, users):
         app.register_blueprint(blueprint)
 
 

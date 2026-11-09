@@ -3,11 +3,12 @@ from test_knowledge_bases import login
 
 def test_admin_can_create_update_view_and_disable_robot(client):
     headers = login(client)
+    base_id = client.get("/api/v1/robots/knowledge-base-options", headers=headers).json["data"]["items"][0]["id"]
     created = client.post(
         "/api/v1/robots",
         headers=headers,
         json={
-            "serial_no": "ROBOT-001",
+            "knowledge_base_id": base_id, "serial_no": "ROBOT-001",
             "name": "一号巡检机器人",
             "description": "仓库巡检设备",
         },
@@ -22,7 +23,7 @@ def test_admin_can_create_update_view_and_disable_robot(client):
     duplicate = client.post(
         "/api/v1/robots",
         headers=headers,
-        json={"serial_no": "ROBOT-001", "name": "重复设备"},
+        json={"knowledge_base_id": base_id, "serial_no": "ROBOT-001", "name": "重复设备"},
     )
     assert duplicate.status_code == 409
 
@@ -58,13 +59,14 @@ def test_admin_can_create_update_view_and_disable_robot(client):
 
 def test_robot_list_search_status_and_validation(client):
     headers = login(client)
+    base_id = client.get("/api/v1/robots/knowledge-base-options", headers=headers).json["data"]["items"][0]["id"]
     for serial, name, status in [
         ("ROBOT-A", "Alpha", "active"),
         ("ROBOT-B", "Beta", "disabled"),
     ]:
         assert client.post(
             "/api/v1/robots", headers=headers,
-            json={"serial_no": serial, "name": name, "status": status},
+            json={"knowledge_base_id": base_id, "serial_no": serial, "name": name, "status": status},
         ).status_code == 201
 
     all_rows = client.get(

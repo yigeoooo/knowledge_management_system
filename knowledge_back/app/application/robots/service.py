@@ -5,19 +5,25 @@ from sqlalchemy.exc import IntegrityError
 
 from ...core.errors import ApiError
 from ...core.extensions import db
-from ...entities import AuditLog
+from ...entities import AuditLog, KnowledgeBase
 from ...repositories.robot_repository import RobotRepository
+from ..conversations.service import active_base, uuid_value
 
 ROBOT_STATUSES = {"active", "disabled"}
-ROBOT_FIELDS = {"serial_no", "name", "description", "status"}
+ROBOT_FIELDS = {"serial_no", "name", "description", "status", "knowledge_base_id", "expected_binding_version"}
 robot_repository = RobotRepository()
 
 def robot_data(robot):
+    base = db.session.get(KnowledgeBase, robot.knowledge_base_id) if robot.knowledge_base_id else None
     return {
         "id": str(robot.id),
         "serial_no": robot.serial_no,
         "name": robot.name,
         "description": robot.description,
+        "knowledge_base_id": str(robot.knowledge_base_id) if robot.knowledge_base_id else None,
+        "knowledge_base_name": base.name if base else None,
+        "knowledge_base_status": base.status if base else None,
+        "binding_version": robot.binding_version,
         "status": robot.status,
         "last_request_at": robot.last_request_at.isoformat() if robot.last_request_at else None,
         "created_by": str(robot.created_by) if robot.created_by else None,
@@ -61,8 +67,15 @@ def validated_input(*, creating=False):
         raise ApiError("请求包含不支持的机器人字段", 422)
     if creating and "serial_no" not in body:
         raise ApiError("请填写机器人序列号", 422)
+    if creating and not body.get("knowledge_base_id"):
+        raise ApiError("请选择机器人绑定的知识库", 422)
 
     values = {}
+    if "knowledge_base_id" in body:
+        values["knowledge_base_id"] = uuid_value(body["knowledge_base_id"], "知识库 ID")
+        active_base(values["knowledge_base_id"])
+    if creating:
+        values["binding_version"] = 1
     if "serial_no" in body:
         values["serial_no"] = valid_text(body["serial_no"], "机器人序列号", 100)
     if "name" in body:

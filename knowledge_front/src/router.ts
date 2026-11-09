@@ -6,6 +6,7 @@ import { restore, session } from './lib/session'
 const components: Record<string, NonNullable<RouteRecordRaw['component']>> = {
   Dashboard: () => import('./views/DashboardView.vue'),
   KnowledgeQA: () => import('./views/QueryView.vue'),
+  RobotQA: () => import('./views/RobotQueryView.vue'),
   Profile: () => import('./views/ProfileView.vue'),
   KnowledgeBaseManagement: () => import('./views/KnowledgeBaseManagementView.vue'),
   DocumentManagement: () => import('./views/DocumentManagementView.vue'),
@@ -15,7 +16,7 @@ const components: Record<string, NonNullable<RouteRecordRaw['component']>> = {
   RoleManagement: () => import('./views/RoleManagementView.vue'),
   PageManagement: () => import('./views/ManagementView.vue'),
   RolePermissions: () => import('./views/PermissionsView.vue'),
-  QALogs: () => import('./views/ManagementView.vue'),
+  QALogs: () => import('./views/ConversationHistoryView.vue'),
   AuditLogs: () => import('./views/ManagementView.vue'),
 }
 export const router = createRouter({
@@ -67,7 +68,7 @@ router.beforeEach(async to => {
   if (to.meta.public) return true
   if (!session.user) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.path === '/workspace') return entryPath()
-  if (changed) return { path: to.fullPath, replace: true }
+  if (changed) return { path: to.path, query: to.query, hash: to.hash, replace: true }
   if (to.name === 'not-found') return '/403'
   if (!session.pages.some(p => p.route_path === to.path)) return '/403'
   return true

@@ -8,6 +8,14 @@ from ..security.password import password_hasher
 
 
 def register_cli(app):
+    @app.cli.command("qa-worker")
+    @click.option("--once", is_flag=True, help="处理一个待回答问题后退出。")
+    def qa_worker(once):
+        """Run the durable conversation answer worker."""
+        from ..workers.qa_worker import run_worker
+        count = run_worker(app, once=once)
+        click.echo(f"已处理 {count} 个问答任务。")
+
     @app.cli.command("index-worker")
     @click.option("--once", is_flag=True, help="处理当前待处理任务后退出。")
     @click.option("--interval", type=click.FloatRange(min=0.1), default=2.0, show_default=True)

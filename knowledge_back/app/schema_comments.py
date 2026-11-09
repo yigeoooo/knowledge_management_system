@@ -66,13 +66,13 @@ SCHEMA = {
     "knowledge_bases": (
         "知识库：组织文档与检索范围；状态包括 active 启用、disabled 停用、archived 归档。",
         {
-            "code": "唯一知识库编码，机器人请求通过此编码选择知识库。",
+            "code": "唯一知识库编码，用于管理与检索；机器人通过绑定 ID 选择知识库。",
             "name": "知识库显示名称。",
             "status": "知识库状态：active 可查询、disabled 暂停服务、archived 已归档。",
         },
     ),
     "robots": (
-        "机器人登记：保存设备身份和启用状态；第一版不绑定知识库，查询时提供知识库编码。",
+        "机器人登记：保存设备身份、启用状态及当前绑定知识库；换绑时递增绑定版本。",
         {
             "serial_no": "机器人唯一序列号，机器人接口用于校验注册身份。",
             "name": "机器人显示名称。",
@@ -153,6 +153,40 @@ SCHEMA = {
         },
     ),
 }
+
+
+SCHEMA["robots"][1].update({
+    "knowledge_base_id": "当前绑定知识库；存量未配置机器人为空且不可问答。",
+    "binding_version": "每次换绑递增，旧会话不能跨绑定版本继续。",
+})
+SCHEMA["qa_logs"][1].update({
+    "conversation_id": "所属会话；历史兼容记录可为空。",
+    "turn_no": "会话内单调递增轮次。",
+    "resolved_question": "结合当前会话理解后的独立检索问题。",
+    "answer_kind": "knowledge 知识回答或 clarification 澄清。",
+    "context_snapshot": "本轮使用的摘要和历史原文快照。",
+    "lease_token": "执行租约唯一标识，防止过期任务写回。",
+    "lease_expires_at": "租约到期时间。",
+    "attempts": "本轮后台执行次数。",
+    "suggestion_anchor": "服务端校验后的推荐问题引用切片。",
+    "status": "PENDING 排队、PROCESSING 执行、SUCCESS 成功、PARTIAL 部分、NO_EVIDENCE 无依据、SOURCES_ONLY 仅资料、FAILED 失败、CANCELLED 取消。",
+})
+SCHEMA["qa_conversations"] = ("独立会话：用户或机器人归属，单会话记忆和软删除。", {
+    "source_type": "WEB 用户或 ROBOT 设备，归属二选一。",
+    "robot_id": "机器人所有者。",
+    "knowledge_base_id": "创建时固定的知识库。",
+    "robot_binding_version": "创建时机器人绑定版本。",
+    "title": "首问截取的会话标题。",
+    "creation_request_id": "创建会话的幂等请求编号。",
+    "next_turn_no": "下一轮编号。",
+    "last_message_at": "最近提交问题时间。",
+    "deleted_at": "用户软删除时间；管理员仍可审计。",
+    "closed_at": "会话关闭时间，关闭后只读。",
+    "closed_reason": "关闭原因，例如 knowledge_base_changed。",
+    "memory_summary": "仅此会话的早期消息摘要。",
+    "summary_through_turn_no": "摘要覆盖截止轮次。",
+    "memory_version": "摘要写入版本。",
+})
 
 
 def describe_schema(metadata):

@@ -27,6 +27,7 @@ const route = useRoute(),
 const icons: Record<string, unknown> = {
   dashboard: House,
   knowledge_qa: ChatDotRound,
+  robot_qa: Cpu,
   knowledge_bases: Collection,
   documents: Document,
   document_create: Document,
@@ -40,6 +41,7 @@ const icons: Record<string, unknown> = {
   profile: User,
 };
 const menu = computed(() => session.pages.filter((p) => p.is_visible && p.page_type !== "button"));
+const conversationMode = computed(() => ["/qa", "/robot-qa"].includes(route.path));
 async function signOut() {
   try {
     await ElMessageBox.confirm("退出后需要重新登录才能访问知识平台。", "退出登录", {
@@ -63,7 +65,7 @@ async function signOut() {
 }
 </script>
 <template>
-  <div class="workspace">
+  <div class="workspace" :class="{ 'workspace-conversation': conversationMode }" @keydown.esc="mobileOpen = false">
     <button
       v-if="mobileOpen"
       class="sidebar-backdrop"
@@ -71,6 +73,7 @@ async function signOut() {
       @click="mobileOpen = false"
     />
     <aside
+      id="workspace-navigation"
       class="workspace-sidebar"
       :class="{ 'is-open': mobileOpen }"
     >
@@ -116,8 +119,10 @@ async function signOut() {
           <el-button
             class="workspace-menu-toggle"
             text
-            aria-label="打开菜单"
-            @click="mobileOpen = true"
+            :aria-label="mobileOpen ? '收起菜单' : '打开菜单'"
+            :aria-expanded="mobileOpen"
+            aria-controls="workspace-navigation"
+            @click="mobileOpen = !mobileOpen"
           >
             <el-icon><Menu /></el-icon>
           </el-button>

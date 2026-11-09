@@ -18,6 +18,8 @@ def app(tmp_path, monkeypatch):
             "JWT_SECRET_KEY": "test-only-secret-never-used-in-production",
             "RATELIMIT_ENABLED": False,
             "SESSION_COOKIE_SECURE": False,
+            "LANGCHAIN_CHAT_ENABLED": False,
+            "QA_WORKER_AUTOSTART": False,
         }
     )
     # The knowledge-base API now provisions a MinIO bucket.  Keep this

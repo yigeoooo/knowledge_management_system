@@ -367,7 +367,7 @@ COMMENT ON COLUMN index_tasks.updated_at IS '记录最后修改时间，带时�
 
 COMMENT ON TABLE index_tasks IS '异步文档处理任务：记录索引、重建或删除任务的状态、重试次数和错误。';
 
-COMMENT ON COLUMN knowledge_bases.code IS '唯一知识库编码，机器人请求通过此编码选择知识库。';
+COMMENT ON COLUMN knowledge_bases.code IS '唯一知识库编码，用于管理与检索；机器人通过绑定 ID 选择知识库。';
 
 COMMENT ON COLUMN knowledge_bases.name IS '知识库显示名称。';
 
@@ -465,7 +465,7 @@ COMMENT ON COLUMN robots.created_at IS '记录创建时间，带时区，应用�
 
 COMMENT ON COLUMN robots.updated_at IS '记录最后修改时间，带时区，应用更新时维护。';
 
-COMMENT ON TABLE robots IS '机器人登记：保存设备身份和启用状态；第一版不绑定知识库，查询时提供知识库编码。';
+COMMENT ON TABLE robots IS '机器人登记：保存设备身份、启用状态及当前绑定知识库；换绑时递增绑定版本。';
 
 COMMENT ON COLUMN role_page_permissions.role_id IS '被授权的角色 ID，关联 roles.id。';
 
@@ -543,6 +543,167 @@ UPDATE alembic_version SET version_num='16bb29ab4421' WHERE alembic_version.vers
 UPDATE alembic_version SET version_num='52c7a3d910e6' WHERE version_num = '16bb29ab4421';
 
 
+-- Running upgrade 52c7a3d910e6 -> 6d8a2b1c904f
+
+ALTER TABLE robots ADD COLUMN knowledge_base_id UUID;
+
+ALTER TABLE robots ADD COLUMN binding_version INTEGER DEFAULT '0' NOT NULL;
+
+ALTER TABLE robots ADD CONSTRAINT fk_robot_knowledge_base FOREIGN KEY(knowledge_base_id) REFERENCES knowledge_bases (id);
+
+CREATE TABLE qa_conversations (
+    id UUID NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    source_type VARCHAR(20) NOT NULL,
+    user_id UUID,
+    robot_id UUID,
+    knowledge_base_id UUID NOT NULL,
+    robot_binding_version INTEGER,
+    title VARCHAR(100) NOT NULL,
+    creation_request_id VARCHAR(100) NOT NULL,
+    next_turn_no INTEGER DEFAULT '1' NOT NULL,
+    last_message_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    closed_at TIMESTAMP WITH TIME ZONE,
+    closed_reason VARCHAR(100),
+    memory_summary TEXT DEFAULT '' NOT NULL,
+    summary_through_turn_no INTEGER DEFAULT '0' NOT NULL,
+    memory_version INTEGER DEFAULT '0' NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT ck_conversation_owner CHECK ((source_type = 'WEB' AND user_id IS NOT NULL AND robot_id IS NULL) OR (source_type = 'ROBOT' AND robot_id IS NOT NULL AND user_id IS NULL)),
+    CONSTRAINT uq_conversation_user_request UNIQUE (user_id, creation_request_id),
+    CONSTRAINT uq_conversation_robot_request UNIQUE (robot_id, creation_request_id),
+    FOREIGN KEY(user_id) REFERENCES users (id),
+    FOREIGN KEY(robot_id) REFERENCES robots (id),
+    FOREIGN KEY(knowledge_base_id) REFERENCES knowledge_bases (id)
+);
+
+CREATE INDEX ix_conversation_user_history ON qa_conversations (user_id, deleted_at, last_message_at, id);
+
+CREATE INDEX ix_conversation_robot_history ON qa_conversations (robot_id, last_message_at, id);
+
+ALTER TABLE qa_logs ADD COLUMN conversation_id UUID;
+
+ALTER TABLE qa_logs ADD COLUMN turn_no INTEGER;
+
+ALTER TABLE qa_logs ADD COLUMN resolved_question TEXT;
+
+ALTER TABLE qa_logs ADD COLUMN answer_kind VARCHAR(30) DEFAULT 'knowledge' NOT NULL;
+
+ALTER TABLE qa_logs ADD COLUMN context_snapshot JSON;
+
+ALTER TABLE qa_logs ADD COLUMN lease_token UUID;
+
+ALTER TABLE qa_logs ADD COLUMN lease_expires_at TIMESTAMP WITH TIME ZONE;
+
+ALTER TABLE qa_logs ADD COLUMN attempts INTEGER DEFAULT '0' NOT NULL;
+
+ALTER TABLE qa_logs ADD COLUMN suggestion_anchor VARCHAR(36);
+
+ALTER TABLE qa_logs ADD CONSTRAINT fk_qa_conversation FOREIGN KEY(conversation_id) REFERENCES qa_conversations (id);
+
+ALTER TABLE qa_logs ADD CONSTRAINT uq_conversation_turn UNIQUE (conversation_id, turn_no);
+
+CREATE INDEX ix_qa_pending ON qa_logs (status, lease_expires_at, created_at);
+
+CREATE UNIQUE INDEX uq_conversation_inflight ON qa_logs (conversation_id) WHERE status IN ('PENDING', 'PROCESSING') AND conversation_id IS NOT NULL;
+
+COMMENT ON TABLE robots IS '机器人登记：保存设备身份、启用状态及当前绑定知识库；换绑时递增绑定版本。';
+
+COMMENT ON COLUMN robots.serial_no IS '机器人唯一序列号，机器人接口用于校验注册身份。';
+
+COMMENT ON COLUMN robots.name IS '机器人显示名称。';
+
+COMMENT ON COLUMN robots.last_request_at IS '最近一次请求知识服务的时间，可为空。';
+
+COMMENT ON COLUMN robots.knowledge_base_id IS '当前绑定知识库；存量未配置机器人为空且不可问答。';
+
+COMMENT ON COLUMN robots.binding_version IS '每次换绑递增，旧会话不能跨绑定版本继续。';
+
+COMMENT ON TABLE qa_conversations IS '独立会话：用户或机器人归属，单会话记忆和软删除。';
+
+COMMENT ON COLUMN qa_conversations.source_type IS 'WEB 用户或 ROBOT 设备，归属二选一。';
+
+COMMENT ON COLUMN qa_conversations.robot_id IS '机器人所有者。';
+
+COMMENT ON COLUMN qa_conversations.knowledge_base_id IS '创建时固定的知识库。';
+
+COMMENT ON COLUMN qa_conversations.robot_binding_version IS '创建时机器人绑定版本。';
+
+COMMENT ON COLUMN qa_conversations.title IS '首问截取的会话标题。';
+
+COMMENT ON COLUMN qa_conversations.creation_request_id IS '创建会话的幂等请求编号。';
+
+COMMENT ON COLUMN qa_conversations.next_turn_no IS '下一轮编号。';
+
+COMMENT ON COLUMN qa_conversations.last_message_at IS '最近提交问题时间。';
+
+COMMENT ON COLUMN qa_conversations.deleted_at IS '用户软删除时间；管理员仍可审计。';
+
+COMMENT ON COLUMN qa_conversations.closed_at IS '会话关闭时间，关闭后只读。';
+
+COMMENT ON COLUMN qa_conversations.closed_reason IS '关闭原因，例如 knowledge_base_changed。';
+
+COMMENT ON COLUMN qa_conversations.memory_summary IS '仅此会话的早期消息摘要。';
+
+COMMENT ON COLUMN qa_conversations.summary_through_turn_no IS '摘要覆盖截止轮次。';
+
+COMMENT ON COLUMN qa_conversations.memory_version IS '摘要写入版本。';
+
+COMMENT ON TABLE qa_logs IS '问答日志：记录网页和机器人请求、答案、引用与耗时；request_id 用于请求幂等。';
+
+COMMENT ON COLUMN qa_logs.request_id IS '唯一请求编号，重复请求应复用已有结果。';
+
+COMMENT ON COLUMN qa_logs.source_type IS '请求来源：WEB 网页用户、ROBOT 机器人。';
+
+COMMENT ON COLUMN qa_logs.robot_id IS '发起请求的机器人 ID，关联 robots.id；网页请求为空。';
+
+COMMENT ON COLUMN qa_logs.knowledge_base_id IS '本次检索的知识库 ID，关联 knowledge_bases.id。';
+
+COMMENT ON COLUMN qa_logs.question IS '用户或机器人提交的原始问题文本。';
+
+COMMENT ON COLUMN qa_logs.answer IS '最终生成的回答文本；失败时可以为空。';
+
+COMMENT ON COLUMN qa_logs.sources IS '回答引用来源的 JSON 数据，包含文档、版本、标题路径和片段。';
+
+COMMENT ON COLUMN qa_logs.retrieval_count IS '本次向量检索实际召回的切片数量。';
+
+COMMENT ON COLUMN qa_logs.model_name IS '本次答案生成使用的大语言模型名称。';
+
+COMMENT ON COLUMN qa_logs.status IS 'PENDING 排队、PROCESSING 执行、SUCCESS 成功、PARTIAL 部分、NO_EVIDENCE 无依据、SOURCES_ONLY 仅资料、FAILED 失败、CANCELLED 取消。';
+
+COMMENT ON COLUMN qa_logs.latency_ms IS '完整问答请求处理耗时，单位为毫秒。';
+
+COMMENT ON COLUMN qa_logs.conversation_id IS '所属会话；历史兼容记录可为空。';
+
+COMMENT ON COLUMN qa_logs.turn_no IS '会话内单调递增轮次。';
+
+COMMENT ON COLUMN qa_logs.resolved_question IS '结合当前会话理解后的独立检索问题。';
+
+COMMENT ON COLUMN qa_logs.answer_kind IS 'knowledge 知识回答或 clarification 澄清。';
+
+COMMENT ON COLUMN qa_logs.context_snapshot IS '本轮使用的摘要和历史原文快照。';
+
+COMMENT ON COLUMN qa_logs.lease_token IS '执行租约唯一标识，防止过期任务写回。';
+
+COMMENT ON COLUMN qa_logs.lease_expires_at IS '租约到期时间。';
+
+COMMENT ON COLUMN qa_logs.attempts IS '本轮后台执行次数。';
+
+COMMENT ON COLUMN qa_logs.suggestion_anchor IS '服务端校验后的推荐问题引用切片。';
+
+COMMENT ON COLUMN qa_conversations.id IS '记录主键，UUID 格式，由应用生成；初始化数据由 SQL 生成。';
+
+COMMENT ON COLUMN qa_conversations.created_at IS '记录创建时间，带时区，应用统一使用 UTC。';
+
+COMMENT ON COLUMN qa_conversations.updated_at IS '记录最后修改时间，带时区，应用更新时维护。';
+
+COMMENT ON COLUMN qa_conversations.user_id IS '关联的网页用户 ID，关联 users.id。';
+
+UPDATE alembic_version SET version_num='6d8a2b1c904f' WHERE alembic_version.version_num = '52c7a3d910e6';
+UPDATE alembic_version SET version_num='9b4f62a710cd' WHERE alembic_version.version_num = '6d8a2b1c904f';
+
 -- 初始角色
 INSERT INTO roles (id, code, name, description, is_system, status, created_at, updated_at) VALUES
 (gen_random_uuid(), 'user', '普通用户', '访问知识问答与个人信息', true, 'active', now(), now()),
@@ -552,6 +713,7 @@ INSERT INTO roles (id, code, name, description, is_system, status, created_at, u
 INSERT INTO pages (id, code, name, route_path, route_name, component_key, parent_id, page_type, sort_order, is_visible, status, created_at, updated_at) VALUES
 (gen_random_uuid(), 'dashboard', '工作台', '/dashboard', 'Dashboard', 'Dashboard', NULL, 'menu', 10, true, 'active', now(), now()),
 (gen_random_uuid(), 'knowledge_qa', '知识问答', '/qa', 'KnowledgeQA', 'KnowledgeQA', NULL, 'menu', 20, true, 'active', now(), now()),
+(gen_random_uuid(), 'robot_qa', '机器人问答', '/robot-qa', 'RobotQA', 'RobotQA', NULL, 'menu', 25, true, 'active', now(), now()),
 (gen_random_uuid(), 'knowledge_bases', '知识库管理', '/knowledge-bases', 'KnowledgeBaseManagement', 'KnowledgeBaseManagement', NULL, 'menu', 40, true, 'active', now(), now()),
 (gen_random_uuid(), 'document_create', '创建文档', '/create-document', 'DocumentCreate', 'DocumentCreate', NULL, 'menu', 45, true, 'active', now(), now()),
 (gen_random_uuid(), 'documents', '文档管理', '/documents', 'DocumentManagement', 'DocumentManagement', NULL, 'menu', 50, true, 'active', now(), now()),

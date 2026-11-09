@@ -2,6 +2,10 @@
 
 Vue 3 + Element Plus 前端和 Flask 后端组成的知识库管理系统，支持 PostgreSQL + pgvector、MinIO AIStor、文档索引和基于文档的问答。
 
+支持独立会话记忆、历史续问与软删除，管理员按用户或机器人查看完整对话，并可导出排版后的 Word 会话记录。机器人绑定知识库后，通过首问和续问两个接口发送请求、等待最终答案，无需轮询；模型适配使用 LangChain，问答流程使用 LangGraph。详见 [会话架构](knowledge_back/docs/conversation-design.md) 和 [机器人接口](knowledge_back/docs/robot-conversation-api.md)。
+
+管理员可在“机器人问答”（`/robot-qa`）选择机器人，直接测试首问、连续追问、新对话和历史会话。页面调用实际机器人接口，答案为简洁的单段纯文本，测试记录归属所选机器人，可在问答日志中查看。
+
 ## 安装依赖和初始化
 
 首次使用请按 [install.md](./install.md) 完成 PostgreSQL、pgvector、MinIO、后端环境变量和项目依赖配置。

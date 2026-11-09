@@ -1,308 +1,156 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChatDotRound, Position, Document, ArrowRight, Refresh } from "@element-plus/icons-vue";
-import { api, ApiError } from "../lib/session";
-import MarkdownContent from "../components/MarkdownContent.vue";
-import SourceContent from "../components/SourceContent.vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Delete, Position, ChatDotRound, Refresh, Fold, Expand, ArrowDown } from '@element-plus/icons-vue'
+import { api } from '../lib/session'
+import { type Conversation, type ConversationPage } from '../lib/conversations'
+import { useConversation } from '../lib/useConversation'
+import ConversationTurns from '../components/ConversationTurns.vue'
 
-interface Source {
-  chunk_id: string;
-  source_id?: string;
-  document_id: string;
-  document_title: string;
-  version_id: string;
-  version_no: number;
-  filename: string;
-  modality: "text" | "image" | "video";
-  score: number | null;
-  heading_path: string | null;
-  content_html?: string | null;
-  content: string | null;
-  preview_url?: string | null;
-}
-interface SuggestedQuestion {
-  question: string;
-  suggestion_token: string;
-  source: { chunk_id: string; document_title: string; version_id: string };
-}
-interface Answer {
-  request_id: string;
-  knowledge_base_id: string;
-  question: string;
-  answer: string;
-  answer_status: "answered" | "partial" | "sources_only" | "insufficient_evidence";
-  sources: Source[];
-}
-const bases = ref<{ id: string; name: string; status: string }[]>([]);
-const basesLoading = ref(true);
-const basesError = ref("");
-const selected = ref("");
-const question = ref("");
-const selectedSuggestion = ref<SuggestedQuestion | null>(null);
-const suggestions = ref<SuggestedQuestion[]>([]);
-const suggestionsLoading = ref(false);
-const suggestionsError = ref("");
-const searching = ref(false);
-const queryError = ref("");
-const answer = ref<Answer | null>(null);
-const submittedQuestion = ref("");
-const sources = computed(() => answer.value?.sources || []);
-let suggestionsController: AbortController | null = null;
-let queryController: AbortController | null = null;
-let suggestionSequence = 0;
-let querySequence = 0;
-let disposed = false;
-let attempt: { signature: string; requestId: string } | null = null;
+const route = useRoute(), router = useRouter()
+const { conversation, turns, loading, sending, error, nextBefore, busy, reset, open, older, send, retry } = useConversation()
+const history = ref<Conversation[]>([]), historyLoading = ref(false), historyError = ref('')
+const cursor = ref<string | null>(null), historySearch = ref('')
+const bases = ref<{ id: string; name: string }[]>([]), baseId = ref(''), question = ref('')
+const suggestions = ref<{ question: string; suggestion_token: string }[]>([]), suggestionsLoading = ref(false)
+const suggestionsError = ref(''), selectedSuggestion = ref<{ question: string; suggestion_token: string } | null>(null)
+const messagePanel = ref<HTMLElement>()
+const historyExpanded = ref(window.innerWidth > 720), pinned = ref(true)
+function trackScroll() { const panel = messagePanel.value; if (panel) pinned.value = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 120 }
+function scrollToLatest() { pinned.value = true; messagePanel.value?.scrollTo({ top: messagePanel.value.scrollHeight, behavior: 'smooth' }) }
+watch(turns, async () => { if (pinned.value) { await nextTick(); scrollToLatest() } }, { deep: true })
+const canSend = computed(() => !loading.value && !!baseId.value && !busy.value && (!route.query.conversation_id || !!conversation.value) && !conversation.value?.closed_at && (!conversation.value || conversation.value.knowledge_base_status === 'active'))
+let historyGeneration = 0, suggestionGeneration = 0, disposed = false
+let suggestionsController = new AbortController()
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "服务暂不可用，请稍后重试";
-}
-async function loadBases() {
-  basesLoading.value = true;
-  basesError.value = "";
+async function loadHistory(more = false) {
+  if (more && !cursor.value) return
+  const current = ++historyGeneration
+  historyLoading.value = true; historyError.value = ''
   try {
-    const result = await api<{ items: { id: string; name: string; status: string }[] }>(
-      "/knowledge-bases?status=active&page=1&page_size=100"
-    );
-    if (disposed) return;
-    bases.value = result.items.filter((base) => base.status === "active");
-    if (!bases.value.some((base) => base.id === selected.value)) {
-      selected.value = bases.value[0]?.id || "";
-    }
-  } catch (error) {
-    if (!disposed) basesError.value = errorMessage(error);
-  } finally {
-    if (!disposed) basesLoading.value = false;
-  }
+    const params = new URLSearchParams({ q: historySearch.value.trim() })
+    if (more && cursor.value) params.set('cursor', cursor.value)
+    const result = await api<ConversationPage>(`/web/conversations?${params}`)
+    if (current !== historyGeneration || disposed) return
+    history.value = more ? [...history.value, ...result.items.filter(item => !history.value.some(old => old.id === item.id))] : result.items
+    cursor.value = result.next_cursor
+  } catch (e) { if (current === historyGeneration && !disposed) historyError.value = (e as Error).message }
+  finally { if (current === historyGeneration && !disposed) historyLoading.value = false }
 }
 async function loadSuggestions() {
-  const sequence = ++suggestionSequence;
-  suggestionsController?.abort();
-  suggestions.value = [];
-  suggestionsError.value = "";
-  suggestionsLoading.value = false;
-  if (!selected.value) return;
-  suggestionsController = new AbortController();
-  suggestionsLoading.value = true;
-  const baseId = selected.value;
+  const current = ++suggestionGeneration
+  suggestionsController.abort(); suggestionsController = new AbortController()
+  suggestions.value = []; suggestionsError.value = ''; suggestionsLoading.value = false
+  if (!baseId.value || conversation.value || route.query.conversation_id) return
+  suggestionsLoading.value = true
   try {
-    const result = await api<{ questions: SuggestedQuestion[] }>("/web/suggested-questions", {
-      method: "POST",
-      body: JSON.stringify({ knowledge_base_id: baseId }),
-      timeoutMs: 120000,
-      signal: suggestionsController.signal,
-    });
-    if (sequence !== suggestionSequence || selected.value !== baseId || disposed) return;
-    suggestions.value = result.questions;
-  } catch (error) {
-    if (sequence === suggestionSequence && !disposed) suggestionsError.value = errorMessage(error);
-  } finally {
-    if (sequence === suggestionSequence && !disposed) suggestionsLoading.value = false;
+    const result = await api<{ questions: typeof suggestions.value }>('/web/suggested-questions', {
+      method: 'POST', body: JSON.stringify({ knowledge_base_id: baseId.value }), timeoutMs: 120000, signal: suggestionsController.signal,
+    })
+    if (current === suggestionGeneration && !disposed) suggestions.value = result.questions
+  } catch (e) { if (current === suggestionGeneration && !disposed) suggestionsError.value = (e as Error).message }
+  finally { if (current === suggestionGeneration && !disposed) suggestionsLoading.value = false }
+}
+async function navigate(id?: string) {
+  question.value = ''; selectedSuggestion.value = null
+  if (window.innerWidth <= 720) historyExpanded.value = false
+  if (id) {
+    if (route.query.conversation_id === id && !conversation.value) await openFromRoute()
+    else await router.replace({ path: '/qa', query: { conversation_id: id } })
+  }
+  else {
+    reset(); await router.replace({ path: '/qa' })
+    if (!bases.value.some(b => b.id === baseId.value)) baseId.value = bases.value[0]?.id || ''
+    void loadSuggestions()
   }
 }
-function requestId() {
-  // getRandomValues also works on an HTTP LAN development origin.
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) =>
-    n.toString(16).padStart(2, "0")
-  ).join("");
+async function openFromRoute() {
+  const id = typeof route.query.conversation_id === 'string' ? route.query.conversation_id : ''
+  if (!id) { reset(); return }
+  if (conversation.value?.id === id) return
+  pinned.value = true
+  suggestionsController.abort(); suggestionGeneration++
+  await open(id)
+  if (conversation.value?.id === id) baseId.value = conversation.value.knowledge_base_id
 }
-function useSuggestion(item: SuggestedQuestion) {
-  question.value = item.question;
-  selectedSuggestion.value = item;
-  queryError.value = "";
-}
-watch(question, (value) => {
-  if (value.trim() !== selectedSuggestion.value?.question) selectedSuggestion.value = null;
-}, { flush: "sync" });
 async function ask() {
-  if (!selected.value || !question.value.trim() || searching.value) return;
-  const baseId = selected.value;
-  const text = question.value.trim();
-  const suggestionToken = selectedSuggestion.value?.question === text
-    ? selectedSuggestion.value.suggestion_token : undefined;
-  const signature = JSON.stringify([baseId, text, suggestionToken]);
-  if (attempt?.signature !== signature) attempt = { signature, requestId: requestId() };
-  const sequence = ++querySequence;
-  queryController?.abort();
-  queryController = new AbortController();
-  searching.value = true;
-  queryError.value = "";
-  answer.value = null;
-  submittedQuestion.value = text;
-  try {
-    const result = await api<Answer>("/web/query", {
-      method: "POST",
-      body: JSON.stringify({ knowledge_base_id: baseId, question: text, request_id: attempt.requestId, suggestion_token: suggestionToken }),
-      timeoutMs: 300000,
-      signal: queryController.signal,
-    });
-    if (sequence !== querySequence || selected.value !== baseId || disposed) return;
-    answer.value = result;
-    // A completed response ends this attempt; an intentional new send may regenerate.
-    // Only network/in-flight retries reuse an unfinished request ID.
-    attempt = null;
-  } catch (error) {
-    if (sequence !== querySequence || disposed) return;
-    queryError.value = errorMessage(error);
-    // Network/provider errors and in-flight retries retain the original request ID.
-    if (error instanceof ApiError && [40901, 40903].includes(error.code)) attempt = null;
-    if (error instanceof ApiError && error.code === 40903) selectedSuggestion.value = null;
-  } finally {
-    if (sequence === querySequence && !disposed) searching.value = false;
+  if (!canSend.value || !question.value.trim()) return
+  const result = await send(question.value, baseId.value,
+    selectedSuggestion.value?.question === question.value.trim() ? selectedSuggestion.value.suggestion_token : undefined)
+  if (result) {
+    question.value = ''; selectedSuggestion.value = null
+    await router.replace({ path: '/qa', query: { conversation_id: result.id } })
+    void loadHistory()
+    await nextTick(); messagePanel.value?.scrollTo({ top: messagePanel.value.scrollHeight, behavior: 'smooth' })
   }
 }
-function newQuestion() {
-  answer.value = null;
-  question.value = "";
-  selectedSuggestion.value = null;
-  submittedQuestion.value = "";
-  queryError.value = "";
-  attempt = null;
+async function remove(item: Conversation) {
+  try { await ElMessageBox.confirm('删除后将从你的历史中移除，管理员仍可审计查看。', '删除对话', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }) } catch { return }
+  try {
+    await api(`/web/conversations/${item.id}`, { method: 'DELETE' })
+    if (conversation.value?.id === item.id) await navigate()
+    await loadHistory()
+  } catch (e) { ElMessage.error((e as Error).message) }
 }
-watch(selected, () => {
-  querySequence += 1;
-  queryController?.abort();
-  searching.value = false;
-  newQuestion();
-  void loadSuggestions();
-}, { flush: "sync" });
-onMounted(loadBases);
-onBeforeUnmount(() => {
-  disposed = true;
-  suggestionSequence += 1;
-  querySequence += 1;
-  suggestionsController?.abort();
-  queryController?.abort();
-});
+watch(() => route.query.conversation_id, openFromRoute)
+watch(baseId, () => { selectedSuggestion.value = null; if (!conversation.value) void loadSuggestions() })
+watch(question, () => { if (selectedSuggestion.value?.question !== question.value.trim()) selectedSuggestion.value = null })
+onMounted(async () => {
+  void loadHistory(); void openFromRoute()
+  try {
+    const result: typeof bases.value = []
+    for (let page = 1; ; page++) {
+      const batch = await api<{ items: typeof bases.value; total: number }>(`/knowledge-bases?status=active&page_size=100&page=${page}`)
+      if (disposed) return
+      result.push(...batch.items)
+      if (result.length >= batch.total || batch.items.length < 100) break
+    }
+    bases.value = result
+    if (!baseId.value) baseId.value = result[0]?.id || ''
+  } catch (e) { if (!disposed) error.value = (e as Error).message }
+})
+onBeforeUnmount(() => { disposed = true; historyGeneration++; suggestionGeneration++; suggestionsController.abort() })
 </script>
 
 <template>
-  <div class="page-heading">
-    <div>
-      <div class="page-eyebrow">ASK YOUR KNOWLEDGE</div>
-      <h1>知识问答</h1>
-      <p>从一个问题开始，发现知识中的答案。</p>
-    </div>
-  </div>
-  <el-alert v-if="basesError" :title="basesError" type="error" :closable="false" class="phase-notice">
-    <el-button text @click="loadBases">重新加载知识库</el-button>
-  </el-alert>
-  <el-alert v-else-if="!basesLoading && !bases.length" title="暂无可用知识库，请联系管理员创建并启用知识库。" type="info" :closable="false" class="phase-notice" />
-  <div class="query-layout">
-    <el-card shadow="never" class="query-card">
-      <div class="query-toolbar">
-        <span>当前知识库</span>
-        <el-select v-model="selected" placeholder="请选择知识库" :loading="basesLoading" :disabled="!bases.length" aria-label="当前知识库">
-          <el-option v-for="base in bases" :key="base.id" :label="base.name" :value="base.id" />
-        </el-select>
-        <el-button v-if="answer" text :disabled="searching" @click="newQuestion">新问题</el-button>
-      </div>
-      <div v-if="!answer && !searching" class="query-welcome">
-        <div class="query-orb"><el-icon><ChatDotRound /></el-icon></div>
-        <h2>你好，有什么想了解的？</h2>
-        <p>选择知识库，用自然语言描述你的问题。</p>
-        <div v-if="selected" class="question-examples" :aria-busy="suggestionsLoading" aria-live="polite">
-          <template v-if="suggestionsLoading">
-            <el-skeleton v-for="index in 3" :key="index" animated>
-              <template #template><el-skeleton-item variant="rect" class="question-skeleton" /></template>
-            </el-skeleton>
-            <span class="suggestion-note">正在根据知识库内容整理问题…</span>
-          </template>
-          <template v-else-if="suggestionsError">
-            <span class="suggestion-note">{{ suggestionsError }}，你也可以直接输入问题。</span>
-            <el-button text :icon="Refresh" @click="loadSuggestions">重新生成推荐问题</el-button>
-          </template>
-          <template v-else-if="suggestions.length">
-            <span class="suggestion-note">你可能想问</span>
-            <button v-for="item in suggestions" :key="item.source.chunk_id" type="button" :title="`来自：${item.source.document_title}`" @click="useSuggestion(item)">
-              <span>{{ item.question }}</span><el-icon><ArrowRight /></el-icon>
-            </button>
-          </template>
-          <template v-else>
-            <span class="suggestion-note">当前知识库暂无可推荐的问题，你可以直接输入问题。</span>
-            <el-button text :icon="Refresh" @click="loadSuggestions">刷新推荐</el-button>
-          </template>
+  <div :class="['chat-workspace', { 'history-collapsed': !historyExpanded }]">
+    <button v-if="historyExpanded" class="chat-history-backdrop" aria-label="关闭历史侧栏" @click="historyExpanded = false" />
+    <aside class="chat-history" aria-label="我的历史对话">
+      <el-button type="primary" :icon="Plus" class="new-chat" @click="navigate()">新对话</el-button>
+      <div class="history-title"><span>我的对话</span><el-button text :icon="Refresh" aria-label="刷新历史" @click="loadHistory()" /></div>
+      <el-input v-model="historySearch" placeholder="搜索历史对话" clearable @keyup.enter="loadHistory()" @clear="loadHistory()" />
+      <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" />
+      <div v-loading="historyLoading" class="history-items">
+        <div v-for="item in history" :key="item.id" :class="['history-item', { selected: conversation?.id === item.id }]">
+          <button class="history-open" @click="navigate(item.id)"><strong>{{ item.title }}</strong><small>{{ item.knowledge_base_name }} · {{ new Date(item.last_message_at).toLocaleDateString() }}</small></button>
+          <el-button text :icon="Delete" :aria-label="`删除对话 ${item.title}`" @click="remove(item)" />
         </div>
+        <p v-if="!history.length && !historyLoading" class="muted">还没有对话，发送第一个问题吧。</p>
+        <el-button v-if="cursor" text :loading="historyLoading" @click="loadHistory(true)">更多历史</el-button>
       </div>
-      <section v-if="searching || answer" class="answer-section" aria-live="polite" :aria-busy="searching">
-        <div class="asked-question">{{ submittedQuestion }}</div>
-        <div v-if="searching" class="answer-loading">
-          <el-skeleton :rows="5" animated />
-          <p>正在查找资料并生成回答，请稍候…</p>
+    </aside>
+    <main class="chat-main">
+      <header class="chat-header"><div class="chat-title"><el-button text :icon="historyExpanded ? Fold : Expand" :aria-label="historyExpanded ? '收起历史侧栏' : '展开历史侧栏'" @click="historyExpanded = !historyExpanded" /><div><h1>{{ conversation?.title || '知识问答' }}</h1><small v-if="conversation">{{ conversation.knowledge_base_name }} · {{ conversation.turn_count }} 轮对话</small></div></div>
+        <el-select v-if="!conversation" v-model="baseId" placeholder="选择知识库" aria-label="选择知识库" :disabled="sending" filterable><el-option v-for="base in bases" :key="base.id" :value="base.id" :label="base.name" /></el-select>
+        <el-button v-else text @click="navigate()">换知识库 / 新对话</el-button>
+      </header>
+      <div ref="messagePanel" v-loading="loading" class="chat-messages" @scroll="trackScroll"><div class="message-column">
+        <el-button v-if="nextBefore" text :loading="loading" @click="older">加载更早消息</el-button>
+        <div v-if="!turns.length && !loading" class="chat-welcome"><el-icon :size="38"><ChatDotRound /></el-icon><h2>今天想了解什么？</h2><p>本次对话会记住上下文，每个新对话独立开始。</p>
+          <div class="suggestion-list"><span v-if="suggestionsLoading">正在准备推荐问题…</span><button v-for="item in suggestions" :key="item.question" @click="question = item.question; selectedSuggestion = item">{{ item.question }}</button><p v-if="suggestionsError">推荐问题暂不可用，你仍可以直接提问。</p><el-button v-if="baseId && !suggestionsLoading" text @click="loadSuggestions">刷新推荐</el-button></div>
         </div>
-        <template v-else-if="answer">
-          <div class="answer-heading">
-            <el-icon><ChatDotRound /></el-icon><strong>知识库回答</strong>
-            <el-tag v-if="answer.answer_status === 'insufficient_evidence'" type="info" size="small">资料不足</el-tag>
-            <el-tag v-else-if="answer.answer_status === 'partial'" type="warning" size="small">部分内容有依据</el-tag>
-            <el-tag v-else-if="answer.answer_status === 'sources_only'" type="info" size="small">可查看相关资料</el-tag>
-          </div>
-          <MarkdownContent class="answer-body" :content="answer.answer" />
-          <div v-if="sources.some((source) => source.source_id)" class="answer-citations">
-            <a v-for="source in sources.filter((item) => item.source_id)" :key="source.chunk_id" :href="`#qa-source-${source.chunk_id}`">
-              [{{ source.source_id }}] {{ source.document_title }}
-            </a>
-          </div>
-        </template>
-      </section>
-      <div class="query-composer">
-        <el-alert v-if="queryError" :title="queryError" type="error" :closable="false" show-icon class="query-error" />
-        <el-input v-model="question" type="textarea" :rows="3" placeholder="输入你的问题，探索团队知识…" maxlength="2000" show-word-limit :disabled="!selected || searching" aria-label="你的问题" />
-        <div>
-          <span>根据当前知识库资料回答，并附上引用来源</span>
-          <el-button type="primary" :icon="Position" :loading="searching" :disabled="!selected || !question.trim()" @click="ask">
-            {{ queryError ? '重试提问' : '发送问题' }}
-          </el-button>
-        </div>
-      </div>
-    </el-card>
-    <el-card class="sources-card" shadow="never">
-      <template #header><div class="card-title"><span><el-icon><Document /></el-icon>引用与相关来源</span></div></template>
-      <div v-if="sources.length" class="source-list">
-        <article v-for="source in sources" :id="`qa-source-${source.chunk_id}`" :key="source.chunk_id" class="source-item">
-          <div class="source-heading"><strong>{{ source.source_id ? `[${source.source_id}] ` : '' }}{{ source.document_title }}</strong></div>
-          <div class="source-meta">v{{ source.version_no }} · {{ source.filename }}</div>
-          <div v-if="source.heading_path" class="source-meta">{{ source.heading_path }}</div>
-          <video v-if="source.modality === 'video' && source.preview_url" class="source-video" controls :src="source.preview_url" preload="metadata" />
-          <img v-else-if="source.modality === 'image' && source.preview_url" class="source-image" :src="source.preview_url" :alt="source.filename" loading="lazy" />
-          <SourceContent v-else-if="source.modality === 'text'" class="source-markdown" :content="source.content || ''" :filename="source.filename" :content-html="source.content_html" />
-          <div v-else class="source-unavailable">媒体预览暂不可用，请稍后重新提问。</div>
-          <div v-if="source.modality !== 'text'" class="source-meta">相关媒体，未用于推断具体内容</div>
-        </article>
-      </div>
-      <el-empty v-else :description="searching ? '正在查找相关来源' : answer ? '没有可引用的来源' : '提问后，这里将展示引用与相关资料'" :image-size="85" />
-    </el-card>
+        <ConversationTurns :turns="turns" :readonly="!!conversation?.closed_at" @retry="retry" />
+      </div></div>
+      <footer class="chat-composer"><el-button v-if="!pinned && turns.length" circle :icon="ArrowDown" class="scroll-latest" aria-label="滚动到最新消息" @click="scrollToLatest" /><div class="composer-box">
+        <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+        <el-button v-if="error && route.query.conversation_id" text @click="open(String(route.query.conversation_id))">刷新当前对话</el-button>
+        <el-alert v-if="conversation?.closed_at || (conversation && conversation.knowledge_base_status !== 'active')" title="此会话目前只读，可查看已有历史。" type="info" :closable="false" />
+        <el-input v-model="question" type="textarea" :rows="3" maxlength="2000" show-word-limit aria-label="你的问题" placeholder="输入问题，或接着上文继续问…" :disabled="!canSend" @keydown.ctrl.enter.prevent="ask" />
+        <div class="composer-actions"><small>依据知识库资料回答 · Ctrl + Enter 发送</small><el-button type="primary" :icon="Position" :loading="sending" :disabled="!canSend || !question.trim()" @click="ask">{{ busy ? '回答中' : '发送问题' }}</el-button></div>
+      </div><p class="answer-disclaimer">回答基于知识库资料，请结合原文核对重要信息</p></footer>
+    </main>
   </div>
 </template>
 
-<style scoped>
-.query-layout { grid-template-columns: minmax(0, 1fr) minmax(360px, 36%); align-items: start; }
-.query-card, .sources-card { min-width: 0; }
-.question-skeleton { width: 100%; height: 54px; border-radius: 6px; }
-.suggestion-note { color: #89919c; font-size: 12px; line-height: 1.8; }
-.question-examples button { gap: 12px; }
-.question-examples button .el-icon { flex-shrink: 0; }
-.answer-section { padding: 28px 24px; }
-.asked-question { padding: 16px; margin-bottom: 24px; background: #fff5e8; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.answer-loading p { margin-top: 16px; color: #89919c; font-size: 13px; }
-.answer-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; color: #b07427; }
-.answer-citations { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
-.answer-citations a { font-size: 12px; color: #a86e20; padding: 5px 9px; background: #fff5e8; border-radius: 4px; text-decoration: none; }
-.query-error { margin-bottom: 14px; }
-.source-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-.source-item { scroll-margin-top: 90px; min-width: 0; padding: 18px; border: 1px solid #ebeef2; border-radius: 8px; background: #fff; overflow-wrap: anywhere; }
-.source-item:target { border-color: #d8902d; }
-.source-heading { font-size: 15px; line-height: 1.6; }
-.source-meta { margin: 6px 0 10px; color: #8a8f98; font-size: 12px; }
-.source-markdown { padding-top: 16px; border-top: 1px solid #f0f1f3; margin-top: 16px; font-size: 14px; max-height: min(65vh, 720px); overflow: auto; scrollbar-gutter: stable; }
-.source-markdown :deep(h1) { font-size: 18px; }
-.source-markdown :deep(h2) { font-size: 17px; }
-.source-markdown :deep(h3), .source-markdown :deep(h4), .source-markdown :deep(h5), .source-markdown :deep(h6) { font-size: 15px; }
-.source-markdown :deep(h1), .source-markdown :deep(h2), .source-markdown :deep(h3), .source-markdown :deep(h4), .source-markdown :deep(h5), .source-markdown :deep(h6) { line-height: 1.5; margin: 20px 0 12px; }
-.source-markdown :deep(> :first-child) { margin-top: 0; }
-.source-unavailable { color: #8a8f98; font-size: 13px; line-height: 1.7; }
-.source-image, .source-video { display: block; max-width: 100%; max-height: 360px; margin-top: 8px; object-fit: contain; }
-.source-video { width: 100%; background: #111; }
-@media (max-width: 1200px) { .query-layout { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 600px) { .answer-section { padding: 22px 16px; } }
-</style>
+<style scoped src="../styles/chat-workspace.css"></style>

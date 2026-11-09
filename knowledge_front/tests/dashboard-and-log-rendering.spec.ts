@@ -49,6 +49,17 @@ const source = {
 const pdfSource = { ...source, source_id: '2', chunk_id: 'pdf-chunk', filename: 'guide.PDF',
   content: '接口说明\n\n1. 检查电源\n2. 启动设备\n\nx² < 10' }
 
+function conversationResponse(path: string, method: string, detail: Record<string, unknown>) {
+  const conversation = { id: 'conversation', title: detail.question, knowledge_base_id: 'base',
+    knowledge_base_name: '设备资料', knowledge_base_status: 'active', last_turn_no: 1, turn_count: 1,
+    owner_name: 'Reader', last_message_at: '2026-11-09T00:00:00Z', deleted_at: null, closed_at: null }
+  const turn = { ...detail, conversation_id: conversation.id, turn_no: 1, conversation }
+  if (path.endsWith('/admin/qa-users')) return { items: [{ id: 'reader', name: 'Reader', identity: 'reader', status: 'active', conversation_count: 1 }], total: 1 }
+  if (path.endsWith('/turns')) return { conversation, items: [turn], next_before: null }
+  if (path.endsWith('/web/conversations') && method === 'POST') return turn
+  return { items: [conversation], next_cursor: null }
+}
+
 test('QA log details render Markdown answers and sources safely', async ({ page }) => {
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
@@ -56,17 +67,19 @@ test('QA log details render Markdown answers and sources safely', async ({ page 
       source_type: 'WEB', created_at: '2026-10-27T00:00:00Z', request_id: 'test-request' }
     const data = path.endsWith('/auth/refresh')
       ? { access_token: 'test-token', user: { id: 'admin', display_name: 'Admin', role: 'super_admin' }, pages: [logs] }
-      : path.endsWith('/qa-logs') ? { items: [detail], total: 1 } : detail
+      : conversationResponse(path, route.request().method(), detail)
     await route.fulfill({ json: { code: 0, data } })
   })
   await page.goto('/qa-logs')
-  await page.getByRole('button', { name: '查看详情' }).click()
-  const dialog = page.getByRole('dialog')
+  await page.locator('.owner-item').click()
+  await page.locator('.audit-conversation').click()
+  await page.locator('.turn-sources > summary').click()
+  const dialog = page.locator('.detail-panel')
   await expect(dialog.getByRole('heading', { name: '操作步骤' })).toBeVisible()
-  await expect(dialog.locator('.qa-answer table')).toContainText('电源')
-  await expect(dialog.locator('.qa-answer pre code')).toHaveText('echo ready\n')
-  await expect(dialog.locator('.qa-source-content h2')).toHaveText('使用说明')
-  await expect(dialog.locator('.qa-source-content li')).toHaveCount(2)
+  await expect(dialog.locator('.conversation-answer table')).toContainText('电源')
+  await expect(dialog.locator('.conversation-answer pre code')).toHaveText('echo ready\n')
+  await expect(dialog.locator('.turn-source h2')).toHaveText('使用说明')
+  await expect(dialog.locator('.turn-source li')).toHaveCount(2)
   await expect(dialog.locator('[onerror]')).toHaveCount(0)
   await expect(dialog.locator('.source-plain-text')).toHaveText(pdfSource.content)
   await expect(dialog.locator('.source-plain-text')).toHaveCSS('white-space', 'pre-wrap')
@@ -82,8 +95,8 @@ test('knowledge QA renders Markdown and preserves PDF citation text and line bre
       data = { items: [{ id: 'base', name: '设备资料', status: 'active' }] }
     } else if (path.endsWith('/web/suggested-questions')) {
       data = { questions: [], status: 'empty' }
-    } else if (path.endsWith('/web/query')) {
-      data = { answer, sources: [source, pdfSource], answer_status: 'answered' }
+    } else if (path.includes('/web/conversations')) {
+      data = conversationResponse(path, route.request().method(), { id: 'log', question: '如何启动？', answer, sources: [source, pdfSource], status: 'SUCCESS', answer_status: 'answered' })
     } else {
       throw new Error(`Unexpected request: ${path}`)
     }
@@ -92,9 +105,10 @@ test('knowledge QA renders Markdown and preserves PDF citation text and line bre
   await page.goto('/qa')
   await page.getByRole('textbox', { name: '你的问题' }).fill('如何启动？')
   await page.getByRole('button', { name: '发送问题' }).click()
-  await expect(page.locator('.answer-body h1')).toHaveText('操作步骤')
-  await expect(page.locator('.answer-body table')).toContainText('电源')
-  await expect(page.locator('.source-markdown h2')).toHaveText('使用说明')
+  await page.locator('.turn-sources > summary').click()
+  await expect(page.locator('.conversation-answer h1')).toHaveText('操作步骤')
+  await expect(page.locator('.conversation-answer table')).toContainText('电源')
+  await expect(page.locator('.turn-source h2')).toHaveText('使用说明')
   await expect(page.locator('.source-plain-text')).toHaveText(pdfSource.content)
   await expect(page.locator('.source-plain-text')).toHaveCSS('white-space', 'pre-wrap')
   await expect(page.locator('[onerror]')).toHaveCount(0)
@@ -123,11 +137,10 @@ for (const path of ['/qa', '/qa-logs']) {
     await page.route('**/api/v1/**', async route => {
       const url = new URL(route.request().url()).pathname
       const detail = { id: 'log', question: '格式测试', answer: '依据资料回答。[1]', sources: [word, pdfSource], status: 'SUCCESS', answer_status: 'answered', source_type: 'WEB', created_at: '2026-10-28T00:00:00Z', request_id: 'word-test' }
-      let data: unknown = detail
+      let data: unknown = conversationResponse(url, route.request().method(), detail)
       if (url.endsWith('/auth/refresh')) data = { access_token: 'test-token', user: { id: 'reader', display_name: 'Reader', role: 'user' }, pages: [qa, logs] }
       else if (url.endsWith('/knowledge-bases')) data = { items: [{ id: 'base', name: '设备资料', status: 'active' }] }
       else if (url.endsWith('/web/suggested-questions')) data = { questions: [], status: 'empty' }
-      else if (url.endsWith('/qa-logs')) data = { items: [detail], total: 1 }
       await route.fulfill({ json: { code: 0, data } })
     })
     await page.goto(path)
@@ -135,8 +148,10 @@ for (const path of ['/qa', '/qa-logs']) {
       await page.getByRole('textbox', { name: '你的问题' }).fill('格式测试')
       await page.getByRole('button', { name: '发送问题' }).click()
     } else {
-      await page.getByRole('button', { name: '查看详情' }).click()
+      await page.locator('.owner-item').click()
+      await page.locator('.audit-conversation').click()
     }
+    await page.locator('.turn-sources > summary').click()
     const rich = page.locator('.word-content')
     await expect(rich.locator('p')).toHaveCSS('text-align', 'center')
     await expect(rich.locator('span')).toHaveCSS('font-weight', '700')
@@ -173,11 +188,10 @@ for (const path of ['/qa', '/qa-logs']) {
       status: 'SUCCESS', answer_status: 'answered', source_type: 'WEB', created_at: '2026-10-29T00:00:00Z', request_id: 'excel-citation' }
     await page.route('**/api/v1/**', async route => {
       const url = new URL(route.request().url()).pathname
-      let data: unknown = detail
+      let data: unknown = conversationResponse(url, route.request().method(), detail)
       if (url.endsWith('/auth/refresh')) data = { access_token: 'test-token', user: { id: 'reader', display_name: 'Reader', role: 'user' }, pages: [qa, logs] }
       else if (url.endsWith('/knowledge-bases')) data = { items: [{ id: 'base', name: '设备资料', status: 'active' }] }
       else if (url.endsWith('/web/suggested-questions')) data = { questions: [], status: 'empty' }
-      else if (url.endsWith('/qa-logs')) data = { items: [detail], total: 1 }
       await route.fulfill({ json: { code: 0, data } })
     })
     await page.goto(path)
@@ -185,8 +199,10 @@ for (const path of ['/qa', '/qa-logs']) {
       await page.getByRole('textbox', { name: '你的问题' }).fill('收支是多少？')
       await page.getByRole('button', { name: '发送问题' }).click()
     } else {
-      await page.getByRole('button', { name: '查看详情' }).click()
+      await page.locator('.owner-item').click()
+      await page.locator('.audit-conversation').click()
     }
+    await page.locator('.turn-sources > summary').click()
     const table = page.getByRole('table', { name: '工作表：收支', exact: true })
     await expect(table).toBeVisible()
     await expect(table.getByRole('columnheader')).toHaveText(['行', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])

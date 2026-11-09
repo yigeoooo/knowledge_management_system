@@ -66,6 +66,11 @@ DEEPSEEK_API_KEY=CHANGE_ME_DEEPSEEK_API_KEY
 DEEPSEEK_CHAT_MODEL=deepseek-chat
 DEEPSEEK_TIMEOUT_SECONDS=60
 QA_MIN_SIMILARITY=0.3
+LANGCHAIN_CHAT_ENABLED=true
+QA_WORKER_AUTOSTART=true
+ROBOT_ANSWER_WAIT_SECONDS=180
+QA_RECENT_TURNS=6
+QA_HISTORY_BUDGET=9000
 
 DASHSCOPE_BASE_URL=https://llm-f9r7idf9omepz6cl.cn-beijing.maas.aliyuncs.com/api/v1
 DASHSCOPE_API_KEY=CHANGE_ME_DASHSCOPE_API_KEY
@@ -103,7 +108,7 @@ docker pull pgvector/pgvector:pg16
 docker volume create kbs_postgres_data
 
 if docker container inspect kbs-postgres >/dev/null 2>&1; then
-  docker start kbs-postgres >/dev/null 2>&1 || true
+  docker start kbs-postgres
 else
   docker run -d \
     --name kbs-postgres \
@@ -116,6 +121,12 @@ else
     pgvector/pgvector:pg16
 fi
 ```
+
+旧容器可能仍将 `knowledge_back/docker/postgres/init` 挂载到
+`/docker-entrypoint-initdb.d`。仓库保留该兼容目录；若启动提示该目录不存在，
+先恢复它（`mkdir -p "$KBS_ROOT/knowledge_back/docker/postgres/init"`），再启动容器。
+该修复不需要重建容器、删除数据卷或重新导入 `init.sql`。启动失败时应先处理错误，
+不要直接进入下面的等待循环。
 
 等待数据库就绪：
 
@@ -287,6 +298,33 @@ curl -fsS http://127.0.0.1:5000/api/v1/health
 ```
 
 浏览器访问 http://127.0.0.1:5173/。Root 初始登录账号和密码由 init.sql 创建，登录后请立即修改初始密码。
+
+### 已有安装升级到多轮会话
+
+已有数据库使用迁移升级，不要重新执行 `init.sql` 或清空数据：
+
+```bash
+cd "$KBS_ROOT/knowledge_back"
+uv sync --locked
+uv run flask --app app db upgrade
+```
+
+升级后重启后端；前端重新安装锁定依赖并构建。迁移会将可确认归属的旧问答保留为单轮会话。历史机器人会话关闭，存量机器人需要在机器人管理中选择知识库后才可发起新问答。本次开发环境的旧问答清理及 `yibin` 绑定已单独完成，不包含在通用迁移中。
+
+最新迁移 `9b4f62a710cd` 新增“机器人问答”菜单（`/robot-qa`），默认授权超级管理员，普通用户不可见。已有安装执行上述 `db upgrade` 即可注册页面；升级后刷新页面或重新登录，重新获取菜单权限。此页面沿用知识问答布局，可选择机器人、查看绑定知识库、开启或继续对话、重试和软删除历史；测试记录保存到对应机器人的问答日志中。机器人答案使用简洁纯文本提示词。
+
+本地默认 `QA_WORKER_AUTOSTART=true`，提交问题或查看历史后启动后台消费。网页问题入库后立即返回，页面轮询最终答案。机器人首问、追问和重试均在原 HTTP 请求内等待最终结果，默认最长 180 秒（`ROBOT_ANSWER_WAIT_SECONDS`）；客户端读取超时及反向代理、应用服务超时应覆盖该等待时长，建议至少 210 秒。机器人任务会主动提交给执行器，不依赖 `QA_WORKER_AUTOSTART` 开关。生产部署建议设为 `false`，并由进程管理器独立运行：
+
+```bash
+cd "$KBS_ROOT/knowledge_back"
+uv run flask --app app qa-worker
+```
+
+可同时运行多个 Worker，数据库行锁和租约防止重复写回答案；进程中断后，过期任务可重新领取。默认租约 300 秒、每 20 秒续租，最多自动尝试 3 次；最后一轮失败可在页面手动重试。`qa-worker --once` 最多处理一个任务，适合检查配置。
+
+`LANGCHAIN_CHAT_ENABLED=true` 使用 LangChain 的 DeepSeek 适配器，LangGraph 执行固定问答流程；设为 `false` 仅切换回原 HTTP 模型适配器，仍使用会话流程。`QA_RECENT_TURNS` 默认 6，`QA_HISTORY_BUDGET` 默认 9000，为历史 JSON 的 UTF-8 字节上限，用作保守 token 预算。长历史每轮最多更新一次摘要；不能覆盖的历史会明确提示。
+
+机器人同步请求格式、等待超时及错误码见 [机器人会话接入](knowledge_back/docs/robot-conversation-api.md)。
 
 ## 6. 常用命令
 

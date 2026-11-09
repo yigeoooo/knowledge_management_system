@@ -12,6 +12,8 @@ class Robot(Record, db.Model):
     status = db.Column(db.String(30), nullable=False, default="active")
     last_request_at = db.Column(db.DateTime(timezone=True))
     created_by = db.Column(db.Uuid, db.ForeignKey("users.id"))
+    knowledge_base_id = db.Column(db.Uuid, db.ForeignKey("knowledge_bases.id"))
+    binding_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
 
 
 __all__ = ["Robot"]

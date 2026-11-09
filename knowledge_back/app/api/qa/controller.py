@@ -20,10 +20,9 @@ from ...api.retrieval.controller import (
 from ...application.qa.grounding_service import NO_EVIDENCE, generate_answer, generate_suggestions
 from ...application.qa.retrieval_service import retrieve_for_answer
 from ...application.qa.search_service import available_chunks
-from ...application.robots.service import valid_text
 from ...core.extensions import db, limiter
 from ...core.http import ApiError, success
-from ...entities import DocumentChunk, KnowledgeBase, QALog, Robot, now
+from ...entities import DocumentChunk, QAConversation, QALog, now
 from ...integrations.ai.chat_adapter import ChatError
 from ...integrations.ai.embedding_adapter import EmbeddingError
 from ...processors.answer_text import answer_text
@@ -178,7 +177,14 @@ def _claim_request(request_id, user_id, base_id, question, *, robot_id=None):
     source_type = "ROBOT" if robot_id is not None else "WEB"
     log = db.session.scalar(db.select(QALog).where(QALog.request_id == request_id))
     if log is None:
+        conversation = QAConversation(
+            id=uuid4(), source_type=source_type, user_id=user_id, robot_id=robot_id,
+            knowledge_base_id=base_id, title=question[:80], creation_request_id=request_id,
+            next_turn_no=2,
+        )
+        db.session.add(conversation)
         log = QALog(
+            conversation_id=conversation.id, turn_no=1,
             id=uuid4(),
             request_id=request_id,
             source_type=source_type,
@@ -190,8 +196,9 @@ def _claim_request(request_id, user_id, base_id, question, *, robot_id=None):
             sources=[],
             retrieval_count=0,
         )
-        db.session.add(log)
         try:
+            db.session.flush()  # Persist the parent before the turn, inside the same transaction.
+            db.session.add(log)
             db.session.commit()
             return log, True
         except IntegrityError:
@@ -207,6 +214,9 @@ def _claim_request(request_id, user_id, base_id, question, *, robot_id=None):
         or log.question != question
     ):
         raise ApiError("请求编号已被使用，请重新提问", 409, 40901)
+    if log.conversation_id:
+        from ...application.conversations.service import get_conversation, writable
+        writable(get_conversation(log.conversation_id, user_id=user_id, robot_id=robot_id))
     if log.status in {"SUCCESS", "PARTIAL", "NO_EVIDENCE", "SOURCES_ONLY"}:
         return log, False
     # A crashed request can be reclaimed after ten minutes. Compare-and-swap also
@@ -231,6 +241,10 @@ def _claim_request(request_id, user_id, base_id, question, *, robot_id=None):
 
 
 def _finish_request(log_id, lease, **values):
+    from ...application.conversations.service import get_conversation, writable
+    log = db.session.get(QALog, log_id)
+    if log and log.conversation_id:
+        writable(get_conversation(log.conversation_id, user_id=log.user_id, robot_id=log.robot_id, lock=True))
     result = db.session.execute(
         db.update(QALog)
         .where(
@@ -284,38 +298,6 @@ def query():
     anchor_id = _suggestion_anchor(body.get("suggestion_token"), g.user.id, base_id, question)
     return _answer_question(request_id, base_id, question, user_id=g.user.id, anchor_id=anchor_id)
 
-
-@qa.post("/robot/query")
-@limiter.limit("60 per minute")
-def robot_query():
-    body = _body({"serial_no", "knowledge_base_code", "question", "request_id"})
-    serial_no = valid_text(body.get("serial_no"), "机器人序列号", 100)
-    robot = db.session.scalar(db.select(Robot).where(Robot.serial_no == serial_no))
-    if robot is None or robot.status != "active":
-        raise ApiError("机器人未注册或已停用", 403, 43001)
-    robot_id = robot.id
-    g.robot_id = robot_id
-    with limiter.limit("20 per minute", key_func=lambda: str(g.robot_id)):
-        question = validate_question(body.get("question"))
-        request_id = _request_id(body.get("request_id"))
-        code = valid_text(body.get("knowledge_base_code"), "知识库编码", 100)
-        base = db.session.scalar(db.select(KnowledgeBase).where(KnowledgeBase.code == code))
-        if base is None or base.status != "active":
-            raise ApiError("知识库不存在或已停用", 404, 43002)
-        base_id = base.id
-        # Recheck identity and status while updating, then release the row before
-        # retrieval/model calls so administrators can still manage the robot.
-        updated = db.session.execute(
-            db.update(Robot)
-            .where(Robot.id == robot_id, Robot.serial_no == serial_no, Robot.status == "active")
-            .values(last_request_at=now())
-            .execution_options(synchronize_session=False)
-        )
-        if updated.rowcount != 1:
-            db.session.rollback()
-            raise ApiError("机器人未注册或已停用", 403, 43001)
-        db.session.commit()
-        return _answer_question(request_id, base_id, question, robot_id=robot_id)
 
 
 def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=None, anchor_id=None):

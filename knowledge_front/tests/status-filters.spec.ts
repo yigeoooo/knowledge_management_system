@@ -41,6 +41,8 @@ for (const screen of screens) {
         const status = url.searchParams.get('status')
         const items = status ? rows.filter(row => row.status === status) : rows
         data = { items, total: items.length, page: 1, page_size: 20 }
+      } else if (url.pathname === '/api/v1/robots/knowledge-base-options') {
+        data = { items: [{ id: baseId, name: 'Fixture base' }], total: 1 }
       } else if (url.pathname === '/api/v1/knowledge-bases') {
         data = { items: [{ id: baseId, name: 'Fixture base', code: 'fixture', status: 'active' }] }
       } else {

@@ -23,6 +23,24 @@ class QALog(Record, db.Model):
     status = db.Column(db.String(30), nullable=False)
     error_message = db.Column(db.Text)
     latency_ms = db.Column(db.Integer)
+    conversation_id = db.Column(db.Uuid, db.ForeignKey("qa_conversations.id"))
+    turn_no = db.Column(db.Integer)
+    resolved_question = db.Column(db.Text)
+    answer_kind = db.Column(db.String(30), nullable=False, default="knowledge", server_default="knowledge")
+    context_snapshot = db.Column(db.JSON)
+    lease_token = db.Column(db.Uuid)
+    lease_expires_at = db.Column(db.DateTime(timezone=True))
+    attempts = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    suggestion_anchor = db.Column(db.String(36))
+    __table_args__ = (
+        db.UniqueConstraint("conversation_id", "turn_no", name="uq_conversation_turn"),
+        db.Index("ix_qa_pending", "status", "lease_expires_at", "created_at"),
+        db.Index(
+            "uq_conversation_inflight", "conversation_id", unique=True,
+            postgresql_where=db.text("status IN ('PENDING', 'PROCESSING') AND conversation_id IS NOT NULL"),
+            sqlite_where=db.text("status IN ('PENDING', 'PROCESSING') AND conversation_id IS NOT NULL"),
+        ),
+    )
 
 
 __all__ = ["QALog"]

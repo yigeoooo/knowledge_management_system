@@ -5,6 +5,7 @@ from uuid import uuid4
 from flask import Blueprint, g, request
 from sqlalchemy import or_
 
+from ...application.conversations.service import rebind_robot, uuid_value
 from ...application.robots.service import (
     ROBOT_STATUSES,
     commit_robot_change,
@@ -16,7 +17,7 @@ from ...application.robots.service import (
 )
 from ...core.extensions import db
 from ...core.http import ApiError, status_filter, success
-from ...entities import Robot
+from ...entities import KnowledgeBase, Robot
 from ..auth.controller import page_required
 
 robots = Blueprint("robots", __name__, url_prefix="/api/v1/robots")
@@ -47,6 +48,8 @@ def list_robots():
         )
     if status:
         query = query.where(Robot.status == status)
+    if request.args.get("knowledge_base_id"):
+        query = query.where(Robot.knowledge_base_id == uuid_value(request.args["knowledge_base_id"]))
     result = db.paginate(
         query.order_by(Robot.created_at.desc(), Robot.id),
         page=page,
@@ -69,6 +72,14 @@ def robot_detail(robot_id):
     return success(robot_data(find_robot(robot_id)))
 
 
+@robots.get("/knowledge-base-options")
+@page_required("/robots")
+def knowledge_base_options():
+    bases = db.session.scalars(db.select(KnowledgeBase).where(KnowledgeBase.status == "active")
+                              .order_by(KnowledgeBase.name, KnowledgeBase.id)).all()
+    return success({"items": [{"id": str(base.id), "name": base.name, "code": base.code} for base in bases]})
+
+
 @robots.post("")
 @page_required("/robots")
 def create_robot():
@@ -79,7 +90,8 @@ def create_robot():
     record_action(
         "robot.create",
         robot,
-        {"serial_no": robot.serial_no, "name": robot.name, "status": robot.status},
+        {"serial_no": robot.serial_no, "name": robot.name, "status": robot.status,
+         "knowledge_base_id": str(robot.knowledge_base_id)},
     )
     commit_robot_change()
     return success(robot_data(robot)), 201
@@ -93,10 +105,17 @@ def update_robot(robot_id):
     if "serial_no" in values:
         ensure_unique_serial(values["serial_no"], robot.id)
     changes = {
-        field: {"before": getattr(robot, field), "after": value}
+        field: {"before": str(getattr(robot, field)) if field == "knowledge_base_id" else getattr(robot, field),
+                "after": str(value) if field == "knowledge_base_id" else value}
         for field, value in values.items()
         if getattr(robot, field) != value
     }
+    if "knowledge_base_id" in values:
+        base_id = values.pop("knowledge_base_id")
+        expected = request.get_json().get("expected_binding_version")
+        if base_id != robot.knowledge_base_id and expected is None:
+            raise ApiError("换绑时请提供 expected_binding_version", 422)
+        rebind_robot(robot, base_id, expected)
     for field, value in values.items():
         setattr(robot, field, value)
     if changes:
