@@ -53,6 +53,22 @@ let changeTimer: number | undefined;
 let initTimer: number | undefined;
 let initialized = false;
 
+// Excel/openpyxl stores column widths in character units; Univer renders
+// widths in CSS pixels. Passing the raw value makes a width such as 6 become
+// a 6px column, which is unreadable for Chinese content.
+const MIN_DISPLAY_COLUMN_WIDTH = 72;
+const MAX_DISPLAY_COLUMN_WIDTH = 520;
+function excelWidthToDisplay(width: unknown) {
+  const value = Number(width);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(MAX_DISPLAY_COLUMN_WIDTH, Math.max(MIN_DISPLAY_COLUMN_WIDTH, Math.round(value * 7 + 5)));
+}
+function displayWidthToExcel(width: unknown) {
+  const value = Number(width);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return Math.max(1, Math.round(((value - 5) / 7) * 100) / 100);
+}
+
 // The API uses Excel names; Univer stores numeric enums. Keep both directions
 // explicit, including numeric values in drafts saved by older editor versions.
 const horizontalAlignments: Record<string, number> = {
@@ -177,7 +193,8 @@ function toUniverWorkbook(source: ExcelWorkbook) {
       let columnIndex = 0;
       for (const char of column.toUpperCase())
         columnIndex = columnIndex * 26 + char.charCodeAt(0) - 64;
-      columnData[Math.max(0, columnIndex - 1)] = { w: width };
+      const displayWidth = excelWidthToDisplay(width);
+      if (displayWidth !== undefined) columnData[Math.max(0, columnIndex - 1)] = { w: displayWidth };
     }
     for (const row of sheet.hidden_rows || []) rowData[row] = { ...(rowData[row] || {}), hd: 1 };
     for (const column of sheet.hidden_columns || []) {
@@ -259,7 +276,7 @@ function fromUniverStyle(style: any) {
   };
 }
 
-function fromUniverWorkbook(snapshot: any): ExcelWorkbook {
+function fromUniverWorkbook(snapshot: any, source?: ExcelWorkbook): ExcelWorkbook {
   const sheets = (snapshot.sheetOrder || []).map((id: string) => {
     const sheet = snapshot.sheets[id] || {};
     const cells: Record<string, ExcelCell> = {};
@@ -284,8 +301,19 @@ function fromUniverWorkbook(snapshot: any): ExcelWorkbook {
     for (const [row, data] of Object.entries(sheet.rowData || {}))
       if ((data as any).h) rowHeights[row] = (data as any).h;
     const columnWidths: Record<string, number> = {};
-    for (const [column, data] of Object.entries(sheet.columnData || {}))
-      if ((data as any).w) columnWidths[columnLabel(Number(column))] = (data as any).w;
+    const sourceSheet = source?.sheets.find((item) => item.id === id);
+    for (const [column, data] of Object.entries(sheet.columnData || {})) {
+      if (!(data as any).w) continue;
+      const label = columnLabel(Number(column));
+      const original = sourceSheet?.column_widths?.[label];
+      const originalDisplay = excelWidthToDisplay(original);
+      const currentDisplay = Number((data as any).w);
+      // Keep the source unit exactly when the user did not resize the column.
+      columnWidths[label] =
+        original !== undefined && originalDisplay !== undefined && Math.abs(currentDisplay - originalDisplay) < 1
+          ? original
+          : displayWidthToExcel(currentDisplay) ?? currentDisplay;
+    }
     const freeze =
       sheet.freeze?.xSplit || sheet.freeze?.ySplit
         ? `${columnLabel(sheet.freeze.xSplit || 0)}${(sheet.freeze.ySplit || 0) + 1}`
@@ -315,7 +343,7 @@ function emitChange() {
   if (!initialized || props.readonly || props.disabled || !workbookApi) return;
   window.clearTimeout(changeTimer);
   changeTimer = window.setTimeout(
-    () => emit("change", fromUniverWorkbook(workbookApi.save())),
+    () => emit("change", fromUniverWorkbook(workbookApi.save(), props.workbook)),
     100
   );
 }
@@ -354,14 +382,24 @@ function initialize() {
     initialized = true;
     nextTick(() => {
       if (!props.readonly && !props.disabled && workbookApi) {
-        emit("change", fromUniverWorkbook(workbookApi.save()));
+        emit("change", fromUniverWorkbook(workbookApi.save(), props.workbook));
       }
     });
   }, 400);
 }
 
 function snapshot() {
-  return workbookApi ? fromUniverWorkbook(workbookApi.save()) : props.workbook;
+  return workbookApi ? fromUniverWorkbook(workbookApi.save(), props.workbook) : props.workbook;
+}
+function columnIndex(column: string) {
+  let value = 0;
+  for (const char of column.toUpperCase()) value = value * 26 + char.charCodeAt(0) - 64;
+  return Math.max(0, value - 1);
+}
+function displayColumnWidth(column: string, sheetIndex = 0) {
+  const data = workbookApi?.save?.() || toUniverWorkbook(props.workbook);
+  const id = data.sheetOrder?.[sheetIndex];
+  return data.sheets?.[id]?.columnData?.[columnIndex(column)]?.w;
 }
 function fullscreen() {
   container.value?.requestFullscreen?.();
@@ -378,7 +416,7 @@ function destroy() {
   univerAPI = null;
   univer = null;
 }
-defineExpose({ snapshot, fullscreen });
+defineExpose({ snapshot, fullscreen, displayColumnWidth });
 watch(() => props.workbook, initialize, { deep: false });
 onMounted(initialize);
 onBeforeUnmount(destroy);

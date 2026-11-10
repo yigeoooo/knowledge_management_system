@@ -3,6 +3,15 @@ import { expect, test } from '@playwright/test'
 const baseId = '00000000-0000-4000-8000-000000000001'
 const pageIdentity = { code: 'document_create', name: '创建文档', route_path: '/create-document', route_name: 'DocumentCreate', component_key: 'DocumentCreate', page_type: 'menu', sort_order: 45, is_visible: true }
 
+async function displayColumnWidth(page: import('@playwright/test').Page, selector: string, column: string) {
+  return page.locator(`${selector}.excel-editor, ${selector} .excel-editor`).first().evaluate((element, column) => {
+    let component = (element as any).__vueParentComponent
+    while (component && !component.exposed?.snapshot) component = component.parent
+    if (!component) throw new Error('Excel editor snapshot is unavailable')
+    return component.exposed.displayColumnWidth(column)
+  }, column)
+}
+
 test('Excel creation mounts Univer and submits a workbook snapshot', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
@@ -155,4 +164,33 @@ test('Excel upload, preview, online edit, new-version save and download work end
   const download = await downloadEvent
   expect(download.suggestedFilename()).toBe('上传参数.xlsx')
   expect(errors).toEqual([])
+})
+
+test('Excel preview converts narrow Excel character widths into readable cell widths', async ({ page }) => {
+  const documentId = '00000000-0000-4000-8000-000000000020'
+  const workbook = {
+    sheets: [{ id: 'sheet1', name: '套票产品', row_count: 6, column_count: 4, column_widths: { A: 6, B: 8, C: 10, D: 12 }, cells: {
+      '0,0': { value: '兴文石海景区套票产品基础内容', formula: null, style: { font: { bold: true } } },
+      '1,0': { value: '产品名称', formula: null }, '1,1': { value: '票价', formula: null },
+      '1,2': { value: '适用人群及说明', formula: null }, '1,3': { value: '备注', formula: null },
+      '2,0': { value: '成人票', formula: null }, '2,1': { value: 99, formula: null },
+      '2,2': { value: '适用于成人游客，包含景区门票及观光车。', formula: null },
+    } }], active_sheet: 'sheet1',
+  }
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    let data: any
+    if (path.endsWith('/auth/refresh')) data = { access_token: 'test-token', user: { id: 'writer', display_name: 'Writer', role_name: '编辑者' }, pages: [{ code: 'documents', name: '文档管理', route_path: '/documents', route_name: 'DocumentManagement', component_key: 'DocumentManagement', page_type: 'menu', is_visible: true }] }
+    else if (path.endsWith('/knowledge-bases')) data = { items: [{ id: baseId, name: '景区知识库', status: 'active' }] }
+    else if (path.endsWith(`/knowledge-bases/${baseId}/documents`)) data = { items: [{ id: documentId, knowledge_base_id: baseId, title: '套票产品', status: 'active', current_version_id: 'version-1', updated_at: '2026-11-10T00:00:00Z', created_by_name: '创建人', updated_by_name: '创建人', current_version: { id: 'version-1', version_no: 1, filename: '套票产品.xlsx', status: 'INDEXED', task: { status: 'SUCCESS' } } }], total: 1, max_file_size: 200 * 1024 * 1024 }
+    else if (path.endsWith(`/documents/${documentId}`)) data = { id: documentId, knowledge_base_id: baseId, title: '套票产品', status: 'active', current_version_id: 'version-1', versions: [{ id: 'version-1', version_no: 1, filename: '套票产品.xlsx', status: 'INDEXED', task: { status: 'SUCCESS' } }] }
+    else if (path.endsWith(`/documents/${documentId}/excel-content`)) data = { version: { id: 'version-1', version_no: 1, filename: '套票产品.xlsx', status: 'INDEXED' }, workbook }
+    else throw new Error(`Unexpected API: ${path}`)
+    await route.fulfill({ json: { code: 0, data } })
+  })
+  await page.goto('/documents')
+  await page.getByRole('row').filter({ hasText: '套票产品' }).getByRole('button', { name: '预览', exact: true }).click()
+  await expect(page.locator('.excel-preview .excel-editor')).toBeVisible()
+  await expect.poll(() => displayColumnWidth(page, '.excel-preview', 'A')).toBeGreaterThanOrEqual(72)
+  await expect.poll(() => displayColumnWidth(page, '.excel-preview', 'C')).toBeGreaterThanOrEqual(72)
 })
