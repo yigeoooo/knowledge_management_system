@@ -155,9 +155,14 @@ def test_robot_followup_and_failed_retry_use_plain_answer_with_context(
         if "draft" in material:
             return qa_tests.grounded_answer(prompt, material, **options)
         assert prompt == qa_tests.grounding_module.ROBOT_ANSWER_PROMPT
+        question = material["question"]
+        if isinstance(question, dict):
+            assert question["resolved_question"] == "安装设备后何时可以操作？"
+            assert question["previous_user_questions"] == [robot_request["question"]]
+            question = question["current_question"]
         texts = (
             ("**状态灯亮起后**即可开始操作。",)
-            if material["question"] == "然后呢？"
+            if question == "然后呢？"
             else ("先检查**电源和接地**。", "确认连接线完好后接通电源。")
         )
         return {

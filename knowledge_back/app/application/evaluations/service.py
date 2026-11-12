@@ -55,7 +55,7 @@ def environment(base_id):
         .order_by(DocumentVersion.id)
     ).all()
     return {
-        "pipeline_version": "rag-v2-prompts-v2-document-ids",
+        "pipeline_version": "rag-v2-prompts-v3-conversation-input",
         "config": {key: current_app.config.get(key) for key in CONFIG_KEYS},
         "index": [
             {
@@ -70,16 +70,36 @@ def environment(base_id):
     }
 
 
-def freeze(dataset, overrides, reviewed_only):
+def prompt_keys_for_input(inputs):
+    task = inputs.get("task", "answer")
+    if task == "summary":
+        return {"summarize"}
+    if task == "suggestions":
+        return {"suggest_questions", "review_suggestions"}
+    covered = {"answer_robot" if inputs.get("robot") else "answer_web", "review_answer"}
+    context = inputs.get("context") or {}
+    if context.get("turns") or context.get("summary"):
+        covered.add("resolve_robot" if inputs.get("robot") else "resolve_web")
+    return covered
+
+
+def freeze(dataset, overrides, reviewed_only, *, example_id=None, expected_revision=None):
     base = db.session.get(KnowledgeBase, dataset.knowledge_base_id)
     if not base or base.status != "active":
         raise ApiError("评测知识库不存在或已停用", 409)
     query = db.select(EvaluationExample).where(EvaluationExample.dataset_id == dataset.id)
-    if reviewed_only:
+    if example_id is not None:
+        query = query.where(EvaluationExample.id == example_id)
+    elif reviewed_only:
         query = query.where(EvaluationExample.reviewed_by.is_not(None))
     examples = db.session.scalars(
         query.order_by(EvaluationExample.created_at, EvaluationExample.id).limit(101)
     ).all()
+    if example_id is not None:
+        if not examples:
+            raise ApiError("测试题不存在或不属于当前评测集", 404)
+        if examples[0].revision != expected_revision:
+            raise ApiError("测试题已修改，请刷新题目后重新发起单题测试", 409)
     if not examples:
         raise ApiError("没有可用样本，请先保存并启用测试题，或选择包含草稿试测", 422)
     if len(examples) > 100:
@@ -98,17 +118,7 @@ def freeze(dataset, overrides, reviewed_only):
         candidate[key] = version_data(version)
     covered = set()
     for example in examples:
-        inputs = example.inputs
-        task = inputs.get("task", "answer")
-        if task == "summary":
-            covered.add("summarize")
-        elif task == "suggestions":
-            covered.update(("suggest_questions", "review_suggestions"))
-        else:
-            covered.update(("answer_robot" if inputs.get("robot") else "answer_web", "review_answer"))
-            context = inputs.get("context") or {}
-            if context.get("turns") or context.get("summary"):
-                covered.add("resolve_robot" if inputs.get("robot") else "resolve_web")
+        covered.update(prompt_keys_for_input(example.inputs))
     unused = [key for key in overrides if key not in covered and candidate[key] != baseline[key]]
     if unused:
         raise ApiError("测试集未覆盖候选用途：" + "、".join(unused) + "；请添加对应渠道的问答、历史追问、摘要或推荐问题样本", 422)
@@ -128,6 +138,7 @@ def freeze(dataset, overrides, reviewed_only):
     if not env["index"]:
         raise ApiError("知识库还没有完成索引的文档", 409)
     return {
+        "scope": "single" if example_id is not None else "dataset",
         "dataset_id": str(dataset.id),
         "dataset_name": dataset.name,
         "knowledge_base_id": str(base.id),

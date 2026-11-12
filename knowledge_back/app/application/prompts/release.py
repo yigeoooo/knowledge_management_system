@@ -15,7 +15,9 @@ def quality_reasons(run):
     reasons = []
     if run.status != "COMPLETED":
         reasons.append("评测尚未成功完成")
-    if (
+    if snapshot.get("scope") == "single":
+        reasons.append("单题测试仅用于调试，请使用评测集全部已启用题目完成发布验收")
+    elif (
         snapshot.get("reviewed_only") is not True
         or not examples
         or any(not e.get("reviewed_by") or not e.get("reviewed_at") for e in examples)

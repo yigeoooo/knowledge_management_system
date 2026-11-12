@@ -171,11 +171,32 @@ def _prepare_answer(state):
             "reviewed": False, "blocks": [], "repairs": 1, "stage": "generate"}
 
 
+def _question_input(question, scope):
+    """Keep user-supplied conditions next to the question, even if rewriting omits them.
+
+    Assistant claims remain in conversation context, never in the evidence passages.
+    Generation and review consume the same question representation.
+    """
+    context = scope.get("conversation_context") or {}
+    turns = context.get("turns") or []
+    questions = [t["question"] for t in turns if isinstance(t, dict)
+                 and isinstance(t.get("question"), str) and t["question"].strip()]
+    summary = context.get("summary") if isinstance(context.get("summary"), str) else ""
+    if not questions and not summary:
+        return question
+    return {
+        "current_question": question,
+        "resolved_question": scope.get("resolved_question") or question,
+        "previous_user_questions": questions,
+        "conversation_summary": summary,
+    }
+
+
 def _generate(state):
     try:
         payload, model = _call(
             ROBOT_ANSWER_PROMPT if state.get("robot") else ANSWER_PROMPT,
-            {"question": state["question"], "scope": state.get("scope") or {},
+            {"question": _question_input(state["question"], state.get("scope") or {}), "scope": state.get("scope") or {},
              "sources": state["material"], "correction": state["correction"]},
             state["deadline"],
         )
@@ -200,7 +221,7 @@ def _review_answer(state):
         blocks, passages = state["blocks"], state["passages"]
         review, _ = _call(
             REVIEW_PROMPT,
-            {"question": state["question"], "scope": state.get("scope") or {},
+            {"question": _question_input(state["question"], state.get("scope") or {}), "scope": state.get("scope") or {},
              "correction": state["review_correction"],
              "draft": [{"id": b["id"], "text": b["text"],
                         "evidence": [passages[key] for key in b["evidence_ids"]]} for b in blocks]},

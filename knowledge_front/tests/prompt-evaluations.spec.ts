@@ -3,9 +3,70 @@ import { expect, test } from '@playwright/test'
 const prompt = { key: 'answer_robot', name: '机器人简洁回答', active_version: 1, generation: 1 }
 const original = { id: 'v1', version: 1, content: '请根据资料用简洁的自然语言回答问题，不得编造事实。', note: '初始版本', created_at: '2026-11-12T00:00:00Z', sha256: 'original' }
 const dataset = { id: 'd1', name: '江源杯测试集', knowledge_base_id: 'kb1', knowledge_base_name: '宜宾江源杯知识库', description: '待审核标注草稿' }
-const example = { id: 'e1', name: '套票价格', inputs: { question: '地质科普游多少钱一人？', robot: true, context: {} }, reference: { expected_document_ids: ['doc1'], expected_documents: ['套票产品内容'], answer_points: ['99元'], expected_status: 'SUCCESS', reference_answer: '99元/人。', source_notes: 'Sheet1 第5行', forbidden_points: [] }, status: 'draft', revision: 1, reviewed_by: null }
+const example = { prompt_keys: ['answer_robot', 'review_answer'], id: 'e1', name: '套票价格', inputs: { question: '地质科普游多少钱一人？', robot: true, context: {} }, reference: { expected_document_ids: ['doc1'], expected_documents: ['套票产品内容'], answer_points: ['99元'], expected_status: 'SUCCESS', reference_answer: '99元/人。', source_notes: 'Sheet1 第5行', forbidden_points: [] }, status: 'draft', revision: 1, reviewed_by: null }
 const arm = { outputs: { answer: '99元/人。', status: 'SUCCESS', latency_ms: 1200, retrieved_documents: ['套票产品内容'], cited_documents: ['套票产品内容'], token_usage: { input_tokens: 200, output_tokens: 10 } }, scores: { status_accuracy: 1 }, error: null }
 const run = { id: 'r1', name: '首轮草稿对比', dataset_id: 'd1', status: 'COMPLETED', created_at: '2026-11-12T00:00:00Z', completed: 1, total: 1, reviewed_only: false, summary: { baseline: { metrics: { status_accuracy: { value: 1, count: 1 } } }, candidate: { metrics: { status_accuracy: { value: 1, count: 1 } } }, delta: { status_accuracy: 0 }, paired_count: 1, human_reviewed_count: 0, human: { baseline: null, candidate: null } }, snapshot: { dataset_name: '江源杯测试集', dataset_hash: 'dataset-hash', environment_hash: 'environment-hash', environment: {}, examples: [example], baseline: { answer_robot: original }, candidate: { answer_robot: original } }, results: [{ id: 'e1', name: example.name, baseline: arm, candidate: arm, review: null }] }
+
+for (const width of [1440, 390]) {
+  test(`record categories expose manual completion independently of generation at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1100 })
+    const records: import('../src/lib/evaluations').Run[] = [
+      { ...run, name: '旧实验待处理', total: 2, completed: 2 },
+      { ...run, id: 'partial', name: '已处理部分题目', total: 2, completed: 2,
+        summary: { ...run.summary, human_reviewed_count: 1, human: { baseline: null, candidate: 1 } } },
+      { ...run, id: 'approved', name: '全部人工确认合格', total: 2, completed: 2,
+        summary: { ...run.summary, human_reviewed_count: 2, human: { baseline: null, candidate: 1 } } },
+      { ...run, id: 'rejected', name: '全部确认含错误', total: 2, completed: 2,
+        summary: { ...run.summary, human_reviewed_count: 2, human: { baseline: null, candidate: 0.5 } } },
+      { ...run, id: 'failed', name: '异常空实验', status: 'FAILED', total: 0, completed: 0 },
+      { ...run, id: 'running', name: '正在生成实验', status: 'RUNNING', total: 2, completed: 1 },
+      { ...run, id: 'single', scope: 'single', name: '单题待确认' },
+      { ...run, id: 'single-rejected', scope: 'single', name: '单题已确认不合格',
+        summary: { ...run.summary, human_reviewed_count: 1, human: { baseline: null, candidate: 0 } } },
+      { ...run, id: 'other', dataset_id: 'd2', name: '另一个评测集实验' },
+    ]
+    const queries: URLSearchParams[] = []
+    await page.route('**/evaluations/runs*', route => {
+      const query = new URL(route.request().url()).searchParams
+      queries.push(query)
+      return route.fulfill({ json: { code: 0, data: { items: records.filter(item =>
+        item.dataset_id === query.get('dataset_id') && (item.scope || 'dataset') === query.get('scope')) } } })
+    })
+    await page.goto('/evaluations')
+    await page.getByRole('tab', { name: '实验记录', exact: true }).click()
+    const table = page.locator('.run-records-table')
+    const record = (name: string) => table.getByRole('row').filter({ hasText: name })
+    await expect(page.getByRole('radio', { name: '评测集记录', exact: true })).toBeChecked()
+    await expect(record('旧实验待处理')).toContainText('答案已生成')
+    await expect(record('旧实验待处理').locator('.review-status')).toContainText('待处理')
+    await expect(record('旧实验待处理')).toContainText('已确认 0 / 2 题')
+    await expect(record('已处理部分题目')).toContainText('部分已处理')
+    await expect(record('已处理部分题目')).toContainText('已确认 1 / 2 题')
+    await expect(record('全部人工确认合格')).toContainText('全部已处理')
+    await expect(record('全部人工确认合格')).toContainText('已确认均合格')
+    await expect(record('全部确认含错误')).toContainText('全部已处理')
+    await expect(record('全部确认含错误')).toContainText('含不合格项')
+    await expect(record('异常空实验')).toContainText('执行异常 · 未全部处理')
+    await expect(record('异常空实验')).not.toContainText('全部已处理')
+    await expect(record('正在生成实验')).toContainText('等待答案生成')
+    await expect(record('单题待确认')).toHaveCount(0)
+    await expect(record('另一个评测集实验')).toHaveCount(0)
+    if (width === 1440) await page.screenshot({ path: '/tmp/kbs-evaluation-records-dataset.png', fullPage: true, animations: 'disabled' })
+    await page.getByRole('radiogroup', { name: '实验记录类型' }).getByText('单题测试记录', { exact: true }).click()
+    await expect(record('单题待确认')).toContainText('已确认 0 / 1 题')
+    await expect(record('单题已确认不合格')).toContainText('全部已处理')
+    await expect(record('单题已确认不合格')).toContainText('含不合格项')
+    await expect(record('旧实验待处理')).toHaveCount(0)
+    expect(queries.some(query => query.get('scope') === 'single' && query.get('dataset_id') === 'd1')).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+    await expect(table.locator('.el-loading-mask:visible')).toHaveCount(0)
+    if (width === 390) await record('单题已确认不合格').locator('.review-status').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `/tmp/kbs-evaluation-records-single-${width}.png`, fullPage: true, animations: 'disabled' })
+    await page.getByRole('radiogroup', { name: '实验记录类型' }).getByText('评测集记录', { exact: true }).click()
+    await expect(record('旧实验待处理')).toBeVisible()
+    await expect(record('单题待确认')).toHaveCount(0)
+  })
+}
 
 test.beforeEach(async ({ page }) => {
   const versions = [original]
@@ -140,9 +201,10 @@ for (const width of [1500, 390]) {
     if (width < 1024) await dialog.getByText('资料预览', { exact: true }).click()
     const sources = dialog.getByRole('region', { name: '知识库资料预览' })
     await expect(sources.getByText('地质科普游票价 99 元/人。')).toBeVisible()
-    const workspace = await dialog.locator('.example-workspace').boundingBox()
-    const previewBounds = await sources.locator('.source-content').boundingBox()
-    expect(previewBounds!.y + previewBounds!.height).toBeLessThanOrEqual(workspace!.y + workspace!.height + 1)
+    await expect.poll(() => dialog.locator('.example-workspace').evaluate(el => {
+      const content = el.querySelector('.source-content')!
+      return content.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom
+    })).toBeLessThanOrEqual(1)
     await sources.getByRole('combobox', { name: '预览文档' }).click()
     await page.getByRole('option').filter({ hasText: '副本.xlsx' }).click()
     await sources.getByRole('button', { name: '加入预期文档', exact: true }).click()
@@ -324,6 +386,10 @@ test('one verdict saves without a note and persists both passing and rejected re
     await dialog.getByRole('button', { name: '保存人工复核' }).click()
     await expect(dialog.getByRole('complementary', { name: '评测题目' })).toContainText(verdict ? '合格 · 已确认' : '不合格 · 已确认')
     await page.keyboard.press('Escape')
+    const record = page.locator('.run-records-table').getByRole('row').filter({ hasText: current.name })
+    await expect(record).toContainText('全部已处理')
+    await expect(record).toContainText('已确认 1 / 1 题')
+    await expect(record).toContainText(verdict ? '已确认均合格' : '含不合格项')
     await page.getByRole('button', { name: '查看逐题对比' }).click()
     await expect(dialog.getByRole('radio', { name: verdict ? '合格' : '不合格', exact: true })).toBeChecked()
     await expect(dialog.getByRole('region', { name: '评测进度', exact: true })).toContainText('已人工确认 1 / 1 题')
@@ -341,7 +407,7 @@ test('real progress refreshes from queued to running to generated without claimi
   let current = { ...run, status: 'PENDING', completed: 0, total: 2,
     quality_reasons: ['评测尚未成功完成', '请逐题完成人工复核'],
     snapshot: { ...run.snapshot, examples: [example, { ...example, id: 'e2', name: '套票内容' }] }, results: [] as typeof run.results }
-  await page.route('**/evaluations/runs', route => route.fulfill({ json: { code: 0, data: { items: [current] } } }))
+  await page.route('**/evaluations/runs*', route => route.fulfill({ json: { code: 0, data: { items: [current] } } }))
   await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
   await page.goto('/evaluations?run=r1')
   const dialog = page.getByRole('dialog', { name: '评测对比详情' })
@@ -384,5 +450,107 @@ for (const [completed, total] of [[0, 0], [1, 2], [1, 1]]) {
     await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', String(total ? Math.floor(completed! / total * 100) : 0))
     await expect(dialog.getByRole('button', { name: '保存人工复核' })).toHaveCount(0)
     await expect(dialog.getByText('模型调用超时', { exact: true })).toBeVisible()
+  })
+}
+
+for (const width of [1440, 390]) {
+  test(`single question testing selects its versions and keeps the authoring context at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 960 })
+    const selected = { ...example, id: 'e2', name: '指定题目', inputs: { ...example.inputs, question: '套票包含什么项目？' }, status: 'enabled', revision: 3 }
+    const candidate = { ...original, id: 'v2', version: 2, note: '候选精简版本' }
+    const summaryPrompt = { ...prompt, key: 'summarize', name: '会话摘要' }
+    const single = { ...run, id: 'single1', scope: 'single', name: '单题测试 · 指定题目', total: 1,
+      snapshot: { ...run.snapshot, examples: [selected], candidate: { answer_robot: candidate } },
+      results: [{ ...run.results[0]!, id: selected.id, name: selected.name }],
+      quality_reasons: ['单题测试仅用于调试，请使用评测集全部已启用题目完成发布验收'] }
+    let saved: Record<string, unknown> | undefined
+    await page.route('**/evaluations/datasets/d1/examples', route => route.fulfill({ json: { code: 0, data: { items: [example, selected] } } }))
+    await page.route('**/api/v1/prompts', route => route.fulfill({ json: { code: 0, data: { items: [prompt, summaryPrompt] } } }))
+    await page.route('**/prompts/answer_robot', route => route.fulfill({ json: { code: 0, data: { ...prompt, versions: [candidate, original] } } }))
+    await page.route('**/prompts/summarize', route => route.fulfill({ json: { code: 0, data: { ...summaryPrompt, versions: [original] } } }))
+    await page.route('**/evaluations/runs*', async route => {
+      if (route.request().method() === 'POST') { saved = route.request().postDataJSON(); await route.fulfill({ status: 202, json: { code: 0, data: single } }) }
+      else await route.fulfill({ json: { code: 0, data: { items: saved ? [single, run] : [run] } } })
+    })
+    await page.route('**/evaluations/runs/single1', route => route.fulfill({ json: { code: 0, data: single } }))
+    await page.goto('/evaluations')
+    await page.getByRole('row').filter({ hasText: selected.name }).getByRole('button', { name: '单题测试', exact: true }).click()
+    const setup = page.getByRole('dialog', { name: '单题测试', exact: true })
+    await expect(setup).toContainText(selected.inputs.question)
+    await expect(setup).toContainText('1 题 × 2 组回答')
+    await expect(setup.getByRole('combobox')).toHaveCount(1)
+    await expect(setup.getByText('会话摘要', { exact: true })).toHaveCount(0)
+    await setup.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '机器人简洁回答候选版本', exact: true }) }).click()
+    await page.getByRole('option', { name: 'v2 · 候选精简版本', exact: true }).click()
+    const panel = page.locator('.el-dialog.single-run-dialog')
+    expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+    await page.screenshot({ path: `/tmp/kbs-single-evaluation-${width}.png`, animations: 'disabled' })
+    await setup.getByRole('button', { name: '开始单题测试', exact: true }).click()
+    await expect(setup).toBeHidden()
+    expect(saved).toMatchObject({ dataset_id: 'd1', example_id: 'e2', expected_revision: 3, overrides: { answer_robot: 'v2' } })
+    const detail = page.getByRole('dialog', { name: '评测对比详情' })
+    await expect(detail.getByText('单题测试 · 非验收结论', { exact: true })).toBeVisible()
+    await expect(detail.getByRole('complementary', { name: '评测题目' }).getByRole('button')).toHaveCount(1)
+    await expect(detail.locator('.comparison-content h3')).toHaveText(selected.inputs.question)
+    await expect(detail.locator('.answer-columns article')).toHaveCount(2)
+    await expect(detail.getByRole('button', { name: '返回提示词，检查发布条件' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('tab', { name: '测试题与人工标注' })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('tab', { name: '实验记录' }).click()
+    await expect(page.getByRole('row').filter({ hasText: single.name })).toContainText('单题测试')
+  })
+}
+
+test('single question error keeps the selected version for correction without falling back to the whole set', async ({ page }) => {
+  const requests: Record<string, unknown>[] = []
+  await page.route('**/evaluations/runs*', async route => {
+    if (route.request().method() === 'POST') {
+      requests.push(route.request().postDataJSON())
+      await route.fulfill({ status: 409, json: { code: 409, message: '测试题已修改，请刷新题目后重新发起单题测试' } })
+    } else await route.fulfill({ json: { code: 0, data: { items: [] } } })
+  })
+  await page.goto('/evaluations')
+  await page.getByRole('button', { name: '单题测试', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '单题测试', exact: true })
+  await dialog.getByRole('button', { name: '开始单题测试', exact: true }).click()
+  await expect(dialog.getByText('测试题已修改，请刷新题目后重新发起单题测试')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '开始单题测试', exact: true })).toBeEnabled()
+  expect(requests).toHaveLength(1)
+  expect(requests[0]).toMatchObject({ example_id: 'e1', expected_revision: 1, overrides: {} })
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('tab', { name: '测试题与人工标注' })).toHaveAttribute('aria-selected', 'true')
+})
+
+for (const scope of ['single', 'dataset']) {
+  test(`comparison exposes frozen conversation history for ${scope} evaluations`, async ({ page }) => {
+    const history = { summary: '一家八口计划出游，想减少步行。', turns: [
+      { turn_no: 2, question: '我们一共8个人。', answer: '请问老人和小孩各有几位？' },
+      { turn_no: 3, question: '一个老人，两个小孩。', answer: '可以优先考虑步行较少的路线。' },
+    ] }
+    const sample = { ...example, inputs: { ...example.inputs, question: '这样一共多少钱？', context: history } }
+    const current = { ...run, scope, snapshot: { ...run.snapshot, examples: [sample] }, results: [{ ...run.results[0]!,
+      baseline: { ...arm, outputs: { ...arm.outputs, resolved_question: '8人游玩一共多少钱？' } },
+      candidate: { ...arm, outputs: { ...arm.outputs, resolved_question: '有老人小孩的团体游玩费用是多少？' } },
+    }] }
+    await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+    await page.goto('/evaluations?run=r1')
+    const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+    const context = dialog.getByRole('region', { name: '本次评测的历史上下文', exact: true })
+    await expect(context).toContainText('一家八口计划出游，想减少步行。')
+    await expect(context).toContainText('我们一共8个人。')
+    await expect(context).toContainText('请问老人和小孩各有几位？')
+    await expect(context).toContainText('一个老人，两个小孩。')
+    await expect(context).toContainText('可以优先考虑步行较少的路线。')
+    await expect(context).toContainText('2 轮')
+    await expect(dialog.locator('.resolved-question')).toHaveCount(2)
+    await expect(dialog.locator('.resolved-question').first()).toContainText('8人游玩一共多少钱？')
+    await expect(dialog.locator('.resolved-question').last()).toContainText('有老人小孩的团体游玩费用是多少？')
+    await context.locator('summary').click()
+    await expect(context.getByText('我们一共8个人。', { exact: true })).toBeHidden()
+    await context.locator('summary').click()
+    await expect(context.getByText('我们一共8个人。', { exact: true })).toBeVisible()
+    await context.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `/tmp/kbs-evaluation-history-${scope}.png`, animations: 'disabled' })
   })
 }

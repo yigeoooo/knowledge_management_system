@@ -18,6 +18,7 @@ const description = computed(() => {
   if (failed.value) return '请查看异常信息和逐题结果；执行失败的题目不能用于发布验收。'
   if (props.run.status === 'PENDING') return '任务已提交，等待后台执行；离开页面后仍会继续。'
   if (active.value) return '每题的两组答案生成后更新进度，可先查看已完成的对比。'
+  if (props.run.scope === 'single') return '本题对比已完成，可确认候选答案是否合格；正式发布仍需完成整个评测集的验收。'
   return '答案生成完成后，需逐题确认候选答案是否合格；执行完成不代表通过验收。'
 })
 </script>

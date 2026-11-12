@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from ...application.documents.preview import preview_version
 from ...application.evaluations import history as history_source
 from ...application.evaluations.documents import document_reference
-from ...application.evaluations.service import aggregate, freeze
+from ...application.evaluations.service import aggregate, freeze, prompt_keys_for_input
 from ...application.prompts.release import quality_reasons
 from ...application.qa.evaluation import EvaluationInput, Reference
 from ...core.extensions import db
@@ -86,6 +86,7 @@ def example_data(row):
         "id": str(row.id),
         "name": row.name,
         "inputs": row.inputs,
+        "prompt_keys": sorted(prompt_keys_for_input(row.inputs)),
         "reference": reference,
         "document_issue": issue,
         "revision": row.revision,
@@ -106,6 +107,7 @@ def run_data(row, details=False):
         "total": len(row.snapshot["examples"]),
         "completed": len(row.results),
         "reviewed_only": row.snapshot["reviewed_only"],
+        "scope": row.snapshot.get("scope", "dataset"),
         "summary": aggregate(row.results),
         "quality_reasons": quality_reasons(row),
     }
@@ -536,7 +538,21 @@ def create_run():
     reviewed_only = data.get("reviewed_only", True)
     if type(reviewed_only) is not bool:
         raise ApiError("reviewed_only 必须是布尔值", 422)
-    snapshot = freeze(dataset, data.get("overrides", {}), reviewed_only)
+    example_id, expected_revision = None, None
+    if "example_id" in data:
+        try:
+            example_id = UUID(str(data["example_id"]))
+        except ValueError:
+            raise ApiError("测试题 ID 不正确", 422) from None
+        expected_revision = data.get("expected_revision")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ApiError("单题测试需携带有效的题目修订号 expected_revision", 422)
+        # Single-question runs include saved drafts, and never provide release evidence.
+        reviewed_only = False
+    elif "expected_revision" in data:
+        raise ApiError("单题测试需指定 example_id", 422)
+    snapshot = freeze(dataset, data.get("overrides", {}), reviewed_only,
+                      example_id=example_id, expected_revision=expected_revision)
     row = EvaluationRun(
         dataset_id=dataset.id,
         name=text(data.get("name"), "实验名称"),
@@ -548,7 +564,8 @@ def create_run():
     audit(
         "evaluation.run.create",
         row,
-        {"dataset_hash": snapshot["dataset_hash"], "reviewed_only": reviewed_only},
+        {"dataset_hash": snapshot["dataset_hash"], "reviewed_only": reviewed_only,
+         "scope": snapshot["scope"], "example_ids": [e["id"] for e in snapshot["examples"]]},
     )
     db.session.commit()
     result = run_data(row)
@@ -559,7 +576,20 @@ def create_run():
 @experiments.get("/runs")
 @page_required("/evaluations")
 def runs():
-    query = db.select(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(50)
+    query = db.select(EvaluationRun)
+    if "dataset_id" in request.args:
+        try:
+            dataset_id = UUID(request.args["dataset_id"])
+        except ValueError:
+            raise ApiError("评测集 ID 不正确", 422) from None
+        query = query.where(EvaluationRun.dataset_id == dataset_id)
+    if "scope" in request.args:
+        scope = request.args["scope"]
+        if scope not in {"single", "dataset"}:
+            raise ApiError("记录类型需为 single 或 dataset", 422)
+        # Experiments created before single-question testing have no scope field.
+        query = query.where(db.func.coalesce(EvaluationRun.snapshot["scope"].as_string(), "dataset") == scope)
+    query = query.order_by(EvaluationRun.created_at.desc(), EvaluationRun.id.desc()).limit(50)
     rows = db.session.scalars(query).all()
     result = [run_data(r) for r in rows]
     db.session.rollback()

@@ -124,6 +124,7 @@ def evaluate_input(inputs, *, retrieval_only=False, trace_context=None):
     titles = trace.get("context_documents") or [s["document_title"] for s in trace.get("ranked", []) if s["chunk_id"] in selected]
     document_ids = trace.get("context_document_ids") or [s["document_id"] for s in trace.get("ranked", []) if s["chunk_id"] in selected]
     return {"mode": inputs.task, "answer": result["answer"], "status": "CLARIFICATION" if result.get("answer_kind") == "clarification" else result["status"],
+            "resolved_question": result.get("resolved_question"),
             "retrieved_documents": result.get("retrieved_documents", titles),
             "retrieved_document_ids": result.get("retrieved_document_ids", document_ids),
             "cited_documents": result.get("cited_documents", [s["document_title"] for s in result["sources"] if s.get("source_id")]),
