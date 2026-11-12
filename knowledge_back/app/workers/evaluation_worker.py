@@ -15,6 +15,7 @@ from ..application.prompts.registry import prompt_scope
 from ..application.qa.evaluation import evaluate_input, metrics
 from ..core.extensions import db
 from ..entities import EvaluationRun, KnowledgeBase, now
+from ..integrations.ai.chat_adapter import ChatError
 
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="evaluation-worker")
 _guard = Lock()
@@ -101,7 +102,13 @@ def evaluate_arm(example, prompts, trace_context=None):
         return {"outputs": output, "scores": scores, "error": None}
     except Exception as error:  # noqa: BLE001 - isolate experiments without exposing provider bodies
         db.session.rollback()
-        return {"outputs": {}, "scores": {}, "error": type(error).__name__}
+        trace = getattr(error, "execution_trace", None) or {}
+        output = {key: value for key, value in {
+            "run_id": trace.get("run_id"), "prompt_versions": trace.get("prompts"),
+        }.items() if value is not None}
+        return {"outputs": output, "scores": {}, "error": type(error).__name__,
+                "error_message": str(error)[:500] if isinstance(error, ChatError)
+                else "评测调用失败，请稍后重试"}
 
 
 def process_one(app):
@@ -118,22 +125,42 @@ def process_one(app):
             thread.start()
         try:
             verify_environment(snapshot)
-            completed = {r["id"] for r in results}
+            retry_mode = any("retry_pending" in r for r in results)
             for index, example in enumerate(snapshot["examples"]):
-                if example["id"] in completed:
-                    continue
-                pair = {"id": example["id"], "name": example["name"], "review": None}
+                existing = next((r for r in results if r["id"] == example["id"]), None)
+                if retry_mode:
+                    if not existing or not existing.get("retry_pending"):
+                        continue
+                    pair = deepcopy(existing)
+                    needed = set(pair["retry_pending"])
+                else:
+                    if existing:
+                        continue
+                    pair = {"id": example["id"], "name": example["name"], "review": None}
+                    needed = {"baseline", "candidate"}
                 # Alternate order to reduce a systematic timing/order advantage.
                 for arm in (
                     ("baseline", "candidate") if index % 2 == 0 else ("candidate", "baseline")
                 ):
+                    if arm not in needed:
+                        continue
                     verify_environment(snapshot)
                     pair[arm] = evaluate_arm(example, snapshot[arm], {"evaluation_run_id": str(id), "evaluation_example_id": example["id"], "evaluation_arm": arm})
-                verify_environment(snapshot)
-                results.append(pair)
-                if not update(id, token, results=results):
-                    return True
-            failed = any(r[a].get("error") for r in results for a in ("baseline", "candidate"))
+                    verify_environment(snapshot)
+                    if retry_mode:
+                        pair["retry_pending"].remove(arm)
+                        results = [deepcopy(pair) if r["id"] == example["id"] else r for r in results]
+                        # Checkpoint each retried arm so lease recovery keeps successful calls.
+                        if not update(id, token, results=results):
+                            return True
+                if not retry_mode:
+                    results.append(pair)
+                    if not update(id, token, results=results):
+                        return True
+            failed = len(results) != len(snapshot["examples"]) or any(
+                r.get("retry_pending") or not r.get(a) or r[a].get("error")
+                for r in results for a in ("baseline", "candidate")
+            )
             update(
                 id,
                 token,

@@ -10,7 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from ...application.documents.preview import preview_version
 from ...application.evaluations import history as history_source
 from ...application.evaluations.documents import document_reference
-from ...application.evaluations.service import aggregate, freeze, prompt_keys_for_input
+from ...application.evaluations.service import (
+    aggregate,
+    freeze,
+    prepare_retry,
+    prompt_keys_for_input,
+)
 from ...application.prompts.release import quality_reasons
 from ...application.qa.evaluation import EvaluationInput, Reference
 from ...core.extensions import db
@@ -23,6 +28,8 @@ from ...entities import (
     EvaluationExample,
     EvaluationRun,
     KnowledgeBase,
+    PromptTemplate,
+    PromptVersion,
     now,
 )
 from ...security.permissions import require_page_access
@@ -105,7 +112,7 @@ def run_data(row, details=False):
         "error_message": row.error_message,
         "created_at": row.created_at.isoformat(),
         "total": len(row.snapshot["examples"]),
-        "completed": len(row.results),
+        "completed": sum(not r.get("retry_pending") for r in row.results),
         "reviewed_only": row.snapshot["reviewed_only"],
         "scope": row.snapshot.get("scope", "dataset"),
         "summary": aggregate(row.results),
@@ -113,6 +120,15 @@ def run_data(row, details=False):
     }
     if details:
         result.update(snapshot=row.snapshot, results=row.results)
+        version_ids = {UUID(v["id"]) for arm in ("baseline", "candidate") for v in row.snapshot[arm].values()}
+        result["prompt_details"] = {
+            str(version.id): {"name": template.name, "note": version.note}
+            for version, template in db.session.execute(
+                db.select(PromptVersion, PromptTemplate)
+                .join(PromptTemplate, PromptTemplate.key == PromptVersion.prompt_key)
+                .where(PromptVersion.id.in_(version_ids))
+            )
+        }
     return result
 
 
@@ -528,13 +544,7 @@ def create_run():
         dataset = find(EvaluationDataset, UUID(str(data.get("dataset_id"))), lock=True)
     except ValueError:
         raise ApiError("评测集 ID 不正确", 422) from None
-    pending = db.session.scalar(
-        db.select(db.func.count())
-        .select_from(EvaluationRun)
-        .where(EvaluationRun.status.in_(["PENDING", "RUNNING"]))
-    )
-    if pending >= 3:
-        raise ApiError("已有多个评测任务，请等待完成", 409)
+    check_run_capacity()
     reviewed_only = data.get("reviewed_only", True)
     if type(reviewed_only) is not bool:
         raise ApiError("reviewed_only 必须是布尔值", 422)
@@ -569,6 +579,51 @@ def create_run():
     )
     db.session.commit()
     result = run_data(row)
+    wake()
+    return success(result), 202
+
+
+def check_run_capacity():
+    pending = db.session.scalar(
+        db.select(db.func.count()).select_from(EvaluationRun)
+        .where(EvaluationRun.status.in_(["PENDING", "RUNNING"]))
+    )
+    if pending >= 3:
+        raise ApiError("已有多个评测任务，请等待完成", 409)
+
+
+@experiments.post("/runs/<uuid:id>/retry")
+@page_required("/evaluations")
+def retry_run(id):
+    data = body() if request.get_data() else {}
+    if set(data) - {"example_id"}:
+        raise ApiError("重测仅支持指定 example_id，提示词和题目沿用本次实验", 422)
+    example_id = None
+    if "example_id" in data:
+        try:
+            example_id = str(UUID(str(data["example_id"])))
+        except (ValueError, TypeError):
+            raise ApiError("测试题 ID 不正确", 422) from None
+    dataset_id = db.session.scalar(db.select(EvaluationRun.dataset_id).where(EvaluationRun.id == id))
+    if dataset_id is None:
+        raise ApiError("记录不存在", 404)
+    # Serialize retries with review saves, workers and changes to the dataset.
+    dataset = find(EvaluationDataset, dataset_id, lock=True)
+    row = find(EvaluationRun, id, lock=True)
+    if row.status != "FAILED":
+        raise ApiError("仅执行异常的实验可重测，请等待当前任务完成", 409)
+    check_run_capacity()
+    results, selected = prepare_retry(row, dataset, example_id)
+    previous_errors = [{"id": r["id"], **{arm: {
+        "error": r.get(arm, {}).get("error"),
+        "run_id": r.get(arm, {}).get("outputs", {}).get("run_id"),
+    } for arm in ("baseline", "candidate")}} for r in row.results if r["id"] in selected]
+    row.results, row.status, row.error_message = results, "PENDING", None
+    row.attempts, row.lease_token, row.lease_expires_at = 0, None, None
+    audit("evaluation.run.retry", row, {"example_ids": selected, "previous_errors": previous_errors})
+    db.session.commit()
+    result = run_data(row, True)
+    db.session.rollback()
     wake()
     return success(result), 202
 

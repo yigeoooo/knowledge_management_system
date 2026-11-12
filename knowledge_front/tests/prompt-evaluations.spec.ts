@@ -105,6 +105,91 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
+test('comparison identifies the historical candidate and frozen baseline versions', async ({ page }) => {
+  const published = { ...original, id: 'v2', version: 2, note: '当前发布版本' }
+  const historical = { ...run, prompt_details: { v1: { name: prompt.name, note: original.note }, v2: { name: prompt.name, note: published.note } }, snapshot: { ...run.snapshot,
+    baseline: { answer_robot: published }, candidate: { answer_robot: original } } }
+  await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: historical } }))
+  await page.goto('/evaluations?run=r1')
+  const answers = page.getByRole('dialog', { name: '评测对比详情' }).locator('.answer-columns article')
+  await expect(answers.nth(0)).toContainText('机器人简洁回答 · v2')
+  await expect(answers.nth(1)).toContainText('机器人简洁回答 · v1')
+  await expect(answers.nth(1)).toContainText('初始版本')
+  await answers.nth(1).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: '/tmp/kbs-evaluation-historical-versions.png', animations: 'disabled' })
+  await answers.nth(1).getByText('查看本题提示词正文', { exact: true }).click()
+  await expect(answers.nth(1).locator('pre')).toContainText(original.content)
+})
+
+for (const scope of ['single', 'dataset'] as const) {
+  for (const retryOne of [false, true]) {
+    test(`failed ${scope} comparison retries ${retryOne ? 'one question' : 'all errors'} in the same record`, async ({ page }) => {
+      const failed = { ...run, scope, status: 'FAILED', error_message: '部分样本调用失败',
+        results: [{ ...run.results[0]!, baseline: { outputs: {}, scores: {}, error: 'ChatError', error_message: '问答模型连接超时，请稍后重试' } }] }
+      const queued = { ...failed, status: 'PENDING', completed: 0, error_message: null,
+        results: [{ ...failed.results[0]!, retry_pending: ['baseline'] }] }
+      let current: typeof failed | typeof queued = failed
+      let sent: unknown = null
+      await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+      await page.route('**/evaluations/runs/r1/retry', route => {
+        expect(route.request().method()).toBe('POST')
+        sent = route.request().postDataJSON()
+        current = queued
+        return route.fulfill({ json: { code: 0, data: queued } })
+      })
+      await page.route('**/evaluations/runs?*', route => route.fulfill({ json: { code: 0, data: { items: [current] } } }))
+      await page.goto('/evaluations?run=r1')
+      const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+      await expect(dialog.locator('.answer-columns')).toContainText('问答模型连接超时，请稍后重试')
+      await expect(dialog.getByRole('region', { name: '异常重测' })).toContainText('1 道题异常或未生成')
+      if (!retryOne && scope === 'dataset') await page.screenshot({ path: '/tmp/kbs-evaluation-retry.png', animations: 'disabled' })
+      if (retryOne) await dialog.getByRole('button', { name: '重新测试这道题', exact: true }).click()
+      else await dialog.getByRole('button', { name: '一键重测所有异常题', exact: true }).click()
+      await expect(dialog.locator('h2')).toHaveText(run.name)
+      await expect(dialog).toContainText('正在重测异常题')
+      await expect(dialog).toContainText('等待重测')
+      await expect(dialog.getByRole('button', { name: '一键重测所有异常题', exact: true })).toBeDisabled()
+      await expect(page).toHaveURL(/run=r1/)
+      expect(sent).toEqual(retryOne ? { example_id: 'e1' } : {})
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('radio', { name: scope === 'single' ? '单题测试记录' : '评测集记录', exact: true })).toBeChecked()
+      await expect(page.locator('.run-records-table')).toContainText(run.name)
+    })
+  }
+}
+
+test('retry errors keep the original comparison available', async ({ page }) => {
+  const failed = { ...run, status: 'FAILED', results: [{ ...run.results[0]!, baseline: { ...arm, error: 'ChatError' } }] }
+  await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: failed } }))
+  await page.route('**/evaluations/runs/r1/retry', route => route.fulfill({ status: 409, json: { code: 40900, message: '知识库索引或运行配置已变化', data: null } }))
+  await page.goto('/evaluations?run=r1')
+  const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+  await dialog.getByRole('button', { name: '一键重测所有异常题', exact: true }).click()
+  await expect(dialog.getByRole('region', { name: '异常重测' })).toContainText('知识库索引或运行配置已变化')
+  await expect(dialog.getByRole('button', { name: '一键重测所有异常题', exact: true })).toBeEnabled()
+  await expect(dialog.locator('h2')).toHaveText(run.name)
+  await expect(page).toHaveURL(/run=r1/)
+})
+
+test('historical version selection is submitted as the candidate', async ({ page }) => {
+  const published = { ...original, id: 'v2', version: 2, note: '已发布的改进版本' }
+  const requests: unknown[] = []
+  await page.route('**/prompts/answer_robot', route => route.fulfill({ json: { code: 0, data: { ...prompt, active_version: 2, versions: [published, original] } } }))
+  await page.route('**/evaluations/datasets/d1/examples', route => route.fulfill({ json: { code: 0, data: { items: [{ ...example, status: 'enabled' }] } } }))
+  await page.route('**/evaluations/runs', route => {
+    requests.push(route.request().postDataJSON())
+    return route.fulfill({ json: { code: 0, data: run } })
+  })
+  await page.goto('/evaluations')
+  await page.getByRole('tab', { name: '发起版本对比', exact: true }).click()
+  await page.locator('.experiment-form .el-select').click()
+  await page.getByRole('option', { name: 'v1 · 初始版本', exact: true }).click()
+  await page.getByRole('button', { name: '开始对比评测', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '评测对比详情' })).toBeVisible()
+  expect(requests).toHaveLength(1)
+  expect(requests[0]).toMatchObject({ overrides: { answer_robot: 'v1' } })
+})
+
 test('saving a draft preserves publication and sends its version to evaluation', async ({ page }) => {
   await page.goto('/prompts')
   await expect(page.locator('.editor-heading')).toContainText('当前发布 v1')
@@ -437,7 +522,7 @@ for (const width of [1440, 390]) {
     const dialog = page.getByRole('dialog', { name: '评测对比详情' })
     const navigation = dialog.getByRole('complementary', { name: '评测题目' })
     for (const [index, label, type] of [[0, '合格', 'success'], [1, '不合格', 'danger'], [2, '待确认', 'warning'], [3, '执行异常', 'warning'], [4, '未生成', 'info']] as const) {
-      const badge = navigation.getByRole('button').nth(index).locator('.question-result')
+      const badge = navigation.locator('.question-select').nth(index).locator('.question-result')
       await expect(badge).toHaveText(label)
       await expect(badge).toHaveClass(new RegExp(`el-tag--${type}`))
     }

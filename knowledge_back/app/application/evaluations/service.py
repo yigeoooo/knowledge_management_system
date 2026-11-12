@@ -154,6 +154,47 @@ def freeze(dataset, overrides, reviewed_only, *, example_id=None, expected_revis
     }
 
 
+def prepare_retry(source, dataset, example_id=None):
+    """Queue only failed arms, retaining the comparison and all successful results."""
+    snapshot = source.snapshot
+    base = db.session.get(KnowledgeBase, dataset.knowledge_base_id)
+    if not base or base.status != "active":
+        raise ApiError("评测知识库不存在或已停用", 409)
+    if str(base.id) != snapshot.get("knowledge_base_id") or base.code != snapshot.get("knowledge_base_code"):
+        raise ApiError("知识库已变化，请重新发起版本对比", 409)
+    if digest(environment(base.id)) != snapshot.get("environment_hash"):
+        raise ApiError("知识库索引或运行配置已变化，无法与原结果混合；请重新发起版本对比", 409)
+    if not snapshot.get("examples") or not snapshot.get("baseline") or not snapshot.get("candidate"):
+        raise ApiError("原实验快照不完整，请重新发起版本对比", 409)
+    examples = {e["id"]: e for e in snapshot["examples"]}
+    if example_id is not None and example_id not in examples:
+        raise ApiError("测试题不属于当前实验", 404)
+    results = deepcopy(source.results)
+    indexed = {r["id"]: r for r in results}
+    selected = []
+    for id, example in examples.items():
+        if example_id is not None and id != example_id:
+            continue
+        result = indexed.get(id)
+        arms = [arm for arm in ("baseline", "candidate") if not result
+                or not result.get(arm) or result[arm].get("error")
+                or arm in result.get("retry_pending", [])]
+        if not arms:
+            continue
+        if result is None:
+            result = {"id": id, "name": example["name"], "review": None,
+                      **{a: {"outputs": {}, "scores": {}, "error": "尚未生成"}
+                         for a in ("baseline", "candidate")}}
+            results.append(result)
+        result["retry_pending"], result["review"] = arms, None
+        selected.append(id)
+    if not selected:
+        raise ApiError("没有可重测的异常题目，正常结果无需重测", 409)
+    order = {id: index for index, id in enumerate(examples)}
+    results.sort(key=lambda r: order[r["id"]])
+    return results, selected
+
+
 def aggregate(results):
     arms = {}
     for arm in ("baseline", "candidate"):
@@ -173,7 +214,7 @@ def aggregate(results):
     pairs = [
         r
         for r in results
-        if all(a in r and not r[a].get("error") for a in ("baseline", "candidate"))
+        if not r.get("retry_pending") and all(a in r and not r[a].get("error") for a in ("baseline", "candidate"))
     ]
     keys = {
         k
