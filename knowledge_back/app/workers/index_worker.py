@@ -280,6 +280,7 @@ def process_one(app) -> bool:
         task_id = _claim_task()
         if task_id is None:
             return False
+        app.logger.info("index task started task=%s", task_id)
         try:
             task = db.session.get(IndexTask, task_id)
             if task.task_type == "DELETE":
@@ -290,13 +291,15 @@ def process_one(app) -> bool:
             task.finished_at = now()
             task.error_message = None
             db.session.commit()
+            app.logger.info("index task completed task=%s", task_id)
         except (EmbeddingError, StorageError, UnicodeDecodeError, RuntimeError, ValueError) as error:
+            app.logger.exception("index task failed task=%s type=%s", task_id, type(error).__name__)
             db.session.rollback()
             _finish_failure(task_id, error)
-        except Exception as error:
+        except Exception:
+            current_app.logger.exception("index task failed task=%s", task_id)
             db.session.rollback()
             _finish_failure(task_id, "索引任务执行失败")
-            current_app.logger.exception("index task failed", exc_info=error)
         return True
 
 

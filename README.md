@@ -25,6 +25,8 @@ uv run flask --app app run --host 127.0.0.1 --port 5000
 
 健康检查：`http://127.0.0.1:5000/api/v1/health`
 
+后端控制台默认输出请求参数、SQL 及耗时、异常堆栈，日志按 `request_id` 关联。可在 `knowledge_back/.env.local` 调整级别和 SQL 开关，重启生效，详见 [后端日志说明](knowledge_back/docs/backend-logging.md)。
+
 ## 启动前端
 
 另开一个终端，在项目根目录执行：

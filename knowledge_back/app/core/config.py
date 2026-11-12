@@ -33,6 +33,10 @@ def configuration(overrides):
         raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters")
     max_document_size = int(overrides.get("MAX_DOCUMENT_SIZE", os.getenv("MAX_DOCUMENT_SIZE", str(200 * 1024 * 1024))))
     return {
+        "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
+        "LOG_SQL_ENABLED": os.getenv("LOG_SQL_ENABLED", "false" if production or overrides.get("TESTING") else "true").lower() in {"1", "true", "yes"},
+        "LOG_SQL_SLOW_MS": max(0, int(os.getenv("LOG_SQL_SLOW_MS", "500"))),
+        "LOG_MAX_BODY_BYTES": max(256, int(os.getenv("LOG_MAX_BODY_BYTES", "8192"))),
         "SQLALCHEMY_DATABASE_URI": URL.create(
             "postgresql+psycopg",
             username=os.getenv("POSTGRES_USER", "root"),

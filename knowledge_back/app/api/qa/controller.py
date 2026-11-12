@@ -327,8 +327,7 @@ def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=No
         )
         if isinstance(error, ApiError):
             raise
-        # Do not log provider payloads, document contents or credentials.
-        current_app.logger.warning(
+        current_app.logger.exception(
             "qa failed request_id=%s type=%s", request_id, type(error).__name__
         )
         raise ApiError(message, 503, 50002) from None

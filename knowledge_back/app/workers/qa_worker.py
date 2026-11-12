@@ -137,7 +137,7 @@ def _heartbeat(app, tid, token, stop):
                     return
             except SQLAlchemyError:
                 db.session.rollback()
-                app.logger.warning("qa lease renewal failed turn=%s", tid)
+                app.logger.warning("qa lease renewal failed turn=%s", tid, exc_info=True)
 
 
 def finish(tid, token, values):
@@ -188,6 +188,7 @@ def process_one(app, turn_id=None):
                 log.suggestion_anchor,
             )
             request_id = log.request_id
+            app.logger.info("qa task started turn=%s conversation=%s request_id=%s", tid, cid, request_id)
             snapshot = log.context_snapshot
             prompts = log.prompt_snapshot
             robot = log.source_type == "ROBOT"
@@ -236,8 +237,11 @@ def process_one(app, turn_id=None):
             if values is None:
                 return True
             values["latency_ms"] = int((monotonic() - started) * 1000)
-            finish(tid, token, values)
-        except Exception as error:  # noqa: BLE001 - isolate failed jobs without leaking provider data
+            saved = finish(tid, token, values)
+            app.logger.info("qa task finished turn=%s status=%s saved=%s duration=%sms",
+                            tid, values.get("status"), saved, values["latency_ms"])
+        except Exception as error:
+            app.logger.exception("qa task failed turn=%s type=%s", tid, type(error).__name__)
             db.session.rollback()
             message = (
                 error.message
@@ -248,7 +252,6 @@ def process_one(app, turn_id=None):
                     else "问答暂时不可用，请稍后重试"
                 )
             )
-            app.logger.warning("qa task failed turn=%s type=%s", tid, type(error).__name__)
             finish(
                 tid,
                 token,
@@ -281,10 +284,12 @@ def schedule_turn(app, turn_id):
             if _turn_tasks.get(key) is future:
                 _turn_tasks.pop(key, None)
         if not future.cancelled() and future.exception() is not None:
-            app.logger.warning(
+            error = future.exception()
+            app.logger.error(
                 "qa task execution failed turn=%s type=%s",
                 turn_id,
-                type(future.exception()).__name__,
+                type(error).__name__,
+                exc_info=(type(error), error, error.__traceback__),
             )
 
     task.add_done_callback(completed)
@@ -335,8 +340,8 @@ def schedule_worker(app):
                     futures = [_executor.submit(process_one, app) for _ in range(2)]
                     for future in futures:
                         future.result()
-            except Exception as error:  # noqa: BLE001 - keep the scheduler alive after a failed job
-                app.logger.warning("qa scheduler failed type=%s", type(error).__name__)
+            except Exception as error:
+                app.logger.exception("qa scheduler failed type=%s", type(error).__name__)
             time.sleep(1)
 
     Thread(target=loop, daemon=True, name="qa-scheduler").start()

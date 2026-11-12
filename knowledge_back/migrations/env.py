@@ -1,17 +1,17 @@
 import logging
 from logging.config import fileConfig
 
-from flask import current_app
-
 from alembic import context
+from flask import current_app
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-fileConfig(config.config_file_name)
+# The application already configures a sanitized console handler. Do not let
+# Alembic replace it or disable app loggers when migrations run in the same process.
+if "diagnostic_formatter" not in current_app.extensions:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 logger = logging.getLogger('alembic.env')
 
 

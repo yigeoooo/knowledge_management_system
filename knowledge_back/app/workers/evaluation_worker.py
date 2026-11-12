@@ -4,9 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import timedelta
 from threading import Event, Lock, Thread
-from time import sleep
+from time import perf_counter, sleep
 from uuid import UUID, uuid4
 
+from flask import current_app
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -77,7 +78,7 @@ def heartbeat(app, id, token, stop):
                     return
             except SQLAlchemyError:
                 db.session.rollback()
-                app.logger.warning("evaluation lease renewal failed run=%s", id)
+                app.logger.warning("evaluation lease renewal failed run=%s", id, exc_info=True)
 
 
 def verify_environment(snapshot):
@@ -95,12 +96,18 @@ def verify_environment(snapshot):
 
 
 def evaluate_arm(example, prompts, trace_context=None):
+    started = perf_counter()
+    current_app.logger.info("evaluation arm started context=%s", trace_context)
     try:
         with prompt_scope(prompts):
             output = evaluate_input(example["inputs"], trace_context=trace_context)
         scores = metrics(output, example["reference"])
+        current_app.logger.info("evaluation arm completed context=%s duration=%.2fms",
+                                trace_context, (perf_counter() - started) * 1000)
         return {"outputs": output, "scores": scores, "error": None}
-    except Exception as error:  # noqa: BLE001 - isolate experiments without exposing provider bodies
+    except Exception as error:
+        current_app.logger.exception("evaluation arm failed context=%s type=%s",
+                                     trace_context, type(error).__name__)
         db.session.rollback()
         trace = getattr(error, "execution_trace", None) or {}
         output = {key: value for key, value in {
@@ -119,6 +126,7 @@ def process_one(app):
         if job is False:
             return True
         id, token, snapshot, results = job
+        app.logger.info("evaluation task started run=%s questions=%s", id, len(snapshot["examples"]))
         stop = Event()
         thread = Thread(target=heartbeat, args=(app, id, token, stop), daemon=True)
         if not app.testing:
@@ -161,7 +169,7 @@ def process_one(app):
                 r.get("retry_pending") or not r.get(a) or r[a].get("error")
                 for r in results for a in ("baseline", "candidate")
             )
-            update(
+            saved = update(
                 id,
                 token,
                 status="FAILED" if failed else "COMPLETED",
@@ -171,7 +179,10 @@ def process_one(app):
                 lease_token=None,
                 lease_expires_at=None,
             )
-        except Exception as error:  # noqa: BLE001 - isolate experiments without exposing provider bodies
+            app.logger.info("evaluation task finished run=%s status=%s saved=%s",
+                            id, "FAILED" if failed else "COMPLETED", saved)
+        except Exception as error:
+            app.logger.exception("evaluation task failed run=%s type=%s", id, type(error).__name__)
             db.session.rollback()
             message = (
                 str(error) if isinstance(error, RuntimeError) else "评测执行失败，请检查服务后重试"
