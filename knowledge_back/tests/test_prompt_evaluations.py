@@ -337,6 +337,7 @@ def test_save_and_enable_is_atomic_and_edit_can_return_to_draft(app, client, adm
 @pytest.mark.parametrize('extension', ['.docx', '.xlsx', '.txt', '.pdf'])
 def test_evaluation_document_previews_use_real_parsers_and_scoped_storage(app, client, admin, dataset, monkeypatch, extension):
     from io import BytesIO
+
     from app.application.documents import preview
 
     did, example, _ = dataset
@@ -369,6 +370,7 @@ def test_evaluation_document_previews_use_real_parsers_and_scoped_storage(app, c
 
 def test_evaluation_preview_does_not_grant_document_management_or_other_base_access(app, client, admin, dataset, monkeypatch):
     from test_page_authorization import grant
+
     from app.application.documents import preview
     from app.entities import Role, RolePagePermission
 
@@ -406,6 +408,8 @@ def test_single_verdict_validation_and_release_gate(app, client, admin, dataset,
     assert review['reviewed_by'] and review['reviewed_at']
     assert run['summary']['human'] == {'baseline': None, 'candidate': 1}
     assert run['summary']['human_reviewed_count'] == 1
+    assert run['summary']['human_passed_count'] == 1
+    assert run['summary']['human_failed_count'] == 0
     for invalid in [{}, {'candidate': None}, {'candidate': True}, {'candidate': '1'},
                     {'candidate': 1.0}, {'candidate': 2}, {'candidate': -1},
                     {'candidate': 1, 'note': None}, {'candidate': 1, 'note': 'x' * 2001},
@@ -419,6 +423,8 @@ def test_single_verdict_validation_and_release_gate(app, client, admin, dataset,
     rejected = response.json['data']
     assert rejected['results'][0]['review']['note'] == '遗漏适用条件'
     assert rejected['summary']['human'] == {'baseline': None, 'candidate': 0}
+    assert rejected['summary']['human_passed_count'] == 0
+    assert rejected['summary']['human_failed_count'] == 1
     assert '候选答案存在人工复核不合格项' in rejected['quality_reasons']
     check = '/api/v1/prompts/answer_robot/versions/2/release-check'
     assert not client.get(check, headers=admin).json['data']['eligible']
@@ -435,10 +441,14 @@ def test_mixed_reviews_do_not_invent_baseline_ratings():
         {**pair, 'review': {'baseline': 0, 'candidate': 1}},
         {**pair, 'review': {'candidate': 0}},
         {**pair, 'review': None},
+        {**pair, 'candidate': {'scores': {}, 'error': 'TimeoutError'}, 'review': None},
     ])
     assert result['human_reviewed_count'] == 2
+    assert result['human_passed_count'] == 1
+    assert result['human_failed_count'] == 1
     assert result['human'] == {'baseline': 0, 'candidate': 0.5}
     assert aggregate([])['human'] == {'baseline': None, 'candidate': None}
+    assert aggregate([])['human_passed_count'] == aggregate([])['human_failed_count'] == 0
 
 
 def test_single_verdict_cannot_approve_running_or_failed_answers(app, client, admin, dataset, monkeypatch):

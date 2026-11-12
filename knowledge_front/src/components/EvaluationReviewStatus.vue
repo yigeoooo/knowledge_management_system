@@ -12,19 +12,18 @@ const state = computed(() => {
   if (!total.value) return { label: '无可确认题目', type: 'info' as const }
   return reviewed.value ? { label: '部分已处理', type: 'warning' as const } : { label: '待处理', type: 'warning' as const }
 })
-const verdict = computed(() => reviewed.value && props.run.summary.human.candidate != null
-  ? props.run.summary.human.candidate === 1 ? '已确认均合格' : '含不合格项'
-  : '')
 </script>
 
 <template>
   <div class="review-status" aria-label="人工处理情况">
-    <el-tag :type="state.type" size="small" effect="light">{{ state.label }}</el-tag>
-    <span class="review-count">已确认 {{ reviewed }} / {{ total }} 题</span>
-    <span v-if="verdict" class="review-verdict" :class="{ rejected: run.summary.human.candidate !== 1 }">{{ verdict }}</span>
+    <div class="review-heading"><el-tag :type="state.type" size="small" effect="light">{{ state.label }}</el-tag><span class="review-count">已确认 {{ reviewed }} / {{ total }} 题</span></div>
+    <div v-if="reviewed > 0 && run.summary.human_failed_count > 0" class="review-totals">
+      <el-tag type="success" effect="light" class="passed-count">合格 <strong>{{ run.summary.human_passed_count }}</strong> 题</el-tag>
+      <el-tag type="danger" effect="light" class="failed-count">不合格 <strong>{{ run.summary.human_failed_count }}</strong> 题</el-tag>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.review-status{display:flex;align-items:flex-start;flex-direction:column;gap:6px;padding:5px 0}.review-count{font-size:12px;color:#738299;font-variant-numeric:tabular-nums}.review-verdict{font-size:11px;color:#348464;line-height:1.5}.review-verdict.rejected{color:#c45a50}
+.review-status{display:flex;align-items:flex-start;flex-direction:column;gap:10px;padding:7px 0}.review-heading{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}.review-count{font-size:11px;color:#738299;font-variant-numeric:tabular-nums}.review-totals{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.review-totals .el-tag{height:28px;padding:0 10px;border-radius:6px}.review-totals strong{font-size:15px;margin:0 3px;font-variant-numeric:tabular-nums}.passed-count{--el-tag-text-color:#26764f;--el-tag-bg-color:#edf8f1;--el-tag-border-color:#c7e7d3}.failed-count{--el-tag-text-color:#bc4747;--el-tag-bg-color:#fff1f1;--el-tag-border-color:#f1cccc}
 </style>

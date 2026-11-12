@@ -196,6 +196,8 @@ def aggregate(results):
         "paired_count": len(pairs),
         "delta": delta,
         "human_reviewed_count": len(reviews),
+        "human_passed_count": sum(r.get("candidate") == 1 for r in reviews),
+        "human_failed_count": sum(r.get("candidate") == 0 for r in reviews),
         "human": {
             a: mean(values) if values else None for a, values in ratings.items()
         },

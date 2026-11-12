@@ -5,7 +5,7 @@ const original = { id: 'v1', version: 1, content: '请根据资料用简洁的�
 const dataset = { id: 'd1', name: '江源杯测试集', knowledge_base_id: 'kb1', knowledge_base_name: '宜宾江源杯知识库', description: '待审核标注草稿' }
 const example = { prompt_keys: ['answer_robot', 'review_answer'], id: 'e1', name: '套票价格', inputs: { question: '地质科普游多少钱一人？', robot: true, context: {} }, reference: { expected_document_ids: ['doc1'], expected_documents: ['套票产品内容'], answer_points: ['99元'], expected_status: 'SUCCESS', reference_answer: '99元/人。', source_notes: 'Sheet1 第5行', forbidden_points: [] }, status: 'draft', revision: 1, reviewed_by: null }
 const arm = { outputs: { answer: '99元/人。', status: 'SUCCESS', latency_ms: 1200, retrieved_documents: ['套票产品内容'], cited_documents: ['套票产品内容'], token_usage: { input_tokens: 200, output_tokens: 10 } }, scores: { status_accuracy: 1 }, error: null }
-const run = { id: 'r1', name: '首轮草稿对比', dataset_id: 'd1', status: 'COMPLETED', created_at: '2026-11-12T00:00:00Z', completed: 1, total: 1, reviewed_only: false, summary: { baseline: { metrics: { status_accuracy: { value: 1, count: 1 } } }, candidate: { metrics: { status_accuracy: { value: 1, count: 1 } } }, delta: { status_accuracy: 0 }, paired_count: 1, human_reviewed_count: 0, human: { baseline: null, candidate: null } }, snapshot: { dataset_name: '江源杯测试集', dataset_hash: 'dataset-hash', environment_hash: 'environment-hash', environment: {}, examples: [example], baseline: { answer_robot: original }, candidate: { answer_robot: original } }, results: [{ id: 'e1', name: example.name, baseline: arm, candidate: arm, review: null }] }
+const run = { id: 'r1', name: '首轮草稿对比', dataset_id: 'd1', status: 'COMPLETED', created_at: '2026-11-12T00:00:00Z', completed: 1, total: 1, reviewed_only: false, summary: { baseline: { metrics: { status_accuracy: { value: 1, count: 1 } } }, candidate: { metrics: { status_accuracy: { value: 1, count: 1 } } }, delta: { status_accuracy: 0 }, paired_count: 1, human_reviewed_count: 0, human_passed_count: 0, human_failed_count: 0, human: { baseline: null, candidate: null } }, snapshot: { dataset_name: '江源杯测试集', dataset_hash: 'dataset-hash', environment_hash: 'environment-hash', environment: {}, examples: [example], baseline: { answer_robot: original }, candidate: { answer_robot: original } }, results: [{ id: 'e1', name: example.name, baseline: arm, candidate: arm, review: null }] }
 
 for (const width of [1440, 390]) {
   test(`record categories expose manual completion independently of generation at ${width}px`, async ({ page }) => {
@@ -13,16 +13,18 @@ for (const width of [1440, 390]) {
     const records: import('../src/lib/evaluations').Run[] = [
       { ...run, name: '旧实验待处理', total: 2, completed: 2 },
       { ...run, id: 'partial', name: '已处理部分题目', total: 2, completed: 2,
-        summary: { ...run.summary, human_reviewed_count: 1, human: { baseline: null, candidate: 1 } } },
+        summary: { ...run.summary, human_reviewed_count: 1, human_passed_count: 1, human_failed_count: 0, human: { baseline: null, candidate: 1 } } },
+      { ...run, id: 'partial-rejected', name: '部分确认含错误', total: 2, completed: 2,
+        summary: { ...run.summary, human_reviewed_count: 1, human_passed_count: 0, human_failed_count: 1, human: { baseline: null, candidate: 0 } } },
       { ...run, id: 'approved', name: '全部人工确认合格', total: 2, completed: 2,
-        summary: { ...run.summary, human_reviewed_count: 2, human: { baseline: null, candidate: 1 } } },
+        summary: { ...run.summary, human_reviewed_count: 2, human_passed_count: 2, human_failed_count: 0, human: { baseline: null, candidate: 1 } } },
       { ...run, id: 'rejected', name: '全部确认含错误', total: 2, completed: 2,
-        summary: { ...run.summary, human_reviewed_count: 2, human: { baseline: null, candidate: 0.5 } } },
+        summary: { ...run.summary, human_reviewed_count: 2, human_passed_count: 1, human_failed_count: 1, human: { baseline: null, candidate: 0.5 } } },
       { ...run, id: 'failed', name: '异常空实验', status: 'FAILED', total: 0, completed: 0 },
       { ...run, id: 'running', name: '正在生成实验', status: 'RUNNING', total: 2, completed: 1 },
       { ...run, id: 'single', scope: 'single', name: '单题待确认' },
       { ...run, id: 'single-rejected', scope: 'single', name: '单题已确认不合格',
-        summary: { ...run.summary, human_reviewed_count: 1, human: { baseline: null, candidate: 0 } } },
+        summary: { ...run.summary, human_reviewed_count: 1, human_passed_count: 0, human_failed_count: 1, human: { baseline: null, candidate: 0 } } },
       { ...run, id: 'other', dataset_id: 'd2', name: '另一个评测集实验' },
     ]
     const queries: URLSearchParams[] = []
@@ -40,22 +42,31 @@ for (const width of [1440, 390]) {
     await expect(record('旧实验待处理')).toContainText('答案已生成')
     await expect(record('旧实验待处理').locator('.review-status')).toContainText('待处理')
     await expect(record('旧实验待处理')).toContainText('已确认 0 / 2 题')
+    await expect(record('旧实验待处理').locator('.review-totals')).toHaveCount(0)
     await expect(record('已处理部分题目')).toContainText('部分已处理')
     await expect(record('已处理部分题目')).toContainText('已确认 1 / 2 题')
+    await expect(record('已处理部分题目').locator('.review-totals')).toHaveCount(0)
+    await expect(record('部分确认含错误')).toContainText('部分已处理')
+    await expect(record('部分确认含错误').locator('.failed-count')).toHaveText('不合格 1 题')
     await expect(record('全部人工确认合格')).toContainText('全部已处理')
-    await expect(record('全部人工确认合格')).toContainText('已确认均合格')
+    await expect(record('全部人工确认合格').locator('.review-totals')).toHaveCount(0)
     await expect(record('全部确认含错误')).toContainText('全部已处理')
-    await expect(record('全部确认含错误')).toContainText('含不合格项')
+    await expect(record('全部确认含错误').locator('.passed-count')).toHaveText('合格 1 题')
+    await expect(record('全部确认含错误').locator('.failed-count')).toHaveText('不合格 1 题')
     await expect(record('异常空实验')).toContainText('执行异常 · 未全部处理')
     await expect(record('异常空实验')).not.toContainText('全部已处理')
+    await expect(record('异常空实验').locator('.review-totals')).toHaveCount(0)
     await expect(record('正在生成实验')).toContainText('等待答案生成')
+    await expect(record('正在生成实验').locator('.review-totals')).toHaveCount(0)
     await expect(record('单题待确认')).toHaveCount(0)
     await expect(record('另一个评测集实验')).toHaveCount(0)
     if (width === 1440) await page.screenshot({ path: '/tmp/kbs-evaluation-records-dataset.png', fullPage: true, animations: 'disabled' })
     await page.getByRole('radiogroup', { name: '实验记录类型' }).getByText('单题测试记录', { exact: true }).click()
     await expect(record('单题待确认')).toContainText('已确认 0 / 1 题')
     await expect(record('单题已确认不合格')).toContainText('全部已处理')
-    await expect(record('单题已确认不合格')).toContainText('含不合格项')
+    await expect(record('单题已确认不合格').locator('.passed-count')).toHaveText('合格 0 题')
+    await expect(record('单题已确认不合格').locator('.failed-count')).toHaveText('不合格 1 题')
+    await expect(record('单题待确认').locator('.review-totals')).toHaveCount(0)
     await expect(record('旧实验待处理')).toHaveCount(0)
     expect(queries.some(query => query.get('scope') === 'single' && query.get('dataset_id') === 'd1')).toBe(true)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
@@ -373,7 +384,7 @@ test('one verdict saves without a note and persists both passing and rejected re
   await page.route('**/evaluations/runs/r1/reviews/e1', async route => {
     const body = route.request().postDataJSON(); requests.push(body)
     current = { ...current, results: [{ ...current.results![0]!, review: { ...body, reviewed_by: 'admin', reviewed_at: '2026-11-12T00:00:00Z' } }],
-      summary: { ...current.summary, human_reviewed_count: 1, human: { baseline: null, candidate: body.candidate } } }
+      summary: { ...current.summary, human_reviewed_count: 1, human_passed_count: body.candidate, human_failed_count: 1 - body.candidate, human: { baseline: null, candidate: body.candidate } } }
     await route.fulfill({ json: { code: 0, data: current } })
   })
   await page.goto('/evaluations?run=r1')
@@ -384,12 +395,17 @@ test('one verdict saves without a note and persists both passing and rejected re
   for (const verdict of [1, 0]) {
     await dialog.getByRole('radiogroup', { name: '本题对比结果' }).getByText(verdict ? '合格' : '不合格', { exact: true }).click()
     await dialog.getByRole('button', { name: '保存人工复核' }).click()
-    await expect(dialog.getByRole('complementary', { name: '评测题目' })).toContainText(verdict ? '合格 · 已确认' : '不合格 · 已确认')
+    const badge = dialog.getByRole('complementary', { name: '评测题目' }).locator('.question-result')
+    await expect(badge).toHaveText(verdict ? '合格' : '不合格')
+    await expect(badge).toHaveClass(verdict ? /el-tag--success/ : /el-tag--danger/)
     await page.keyboard.press('Escape')
     const record = page.locator('.run-records-table').getByRole('row').filter({ hasText: current.name })
     await expect(record).toContainText('全部已处理')
     await expect(record).toContainText('已确认 1 / 1 题')
-    await expect(record).toContainText(verdict ? '已确认均合格' : '含不合格项')
+    if (verdict === 0) {
+      await expect(record.locator('.passed-count')).toHaveText('合格 0 题')
+      await expect(record.locator('.failed-count')).toHaveText('不合格 1 题')
+    } else await expect(record.locator('.review-totals')).toHaveCount(0)
     await page.getByRole('button', { name: '查看逐题对比' }).click()
     await expect(dialog.getByRole('radio', { name: verdict ? '合格' : '不合格', exact: true })).toBeChecked()
     await expect(dialog.getByRole('region', { name: '评测进度', exact: true })).toContainText('已人工确认 1 / 1 题')
@@ -400,6 +416,41 @@ test('one verdict saves without a note and persists both passing and rejected re
   }
   expect(requests).toEqual([{ candidate: 1, note: '' }, { candidate: 0, note: '' }])
 })
+
+for (const width of [1440, 390]) {
+  test(`question navigation distinguishes verdicts from pending and failed answers at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const samples = ['票价确认', '游玩人数', '老人优惠', '儿童票价', '推荐路线'].map((name, index) => ({
+      ...example, id: `e${index + 1}`, name, inputs: { ...example.inputs, question: `${name}的问题` },
+    }))
+    const review = { candidate: 1, note: '', reviewed_by: 'admin', reviewed_at: '2026-11-12T00:00:00Z' }
+    const current = { ...run, status: 'FAILED', total: 5, completed: 4,
+      summary: { ...run.summary, human_reviewed_count: 2, human_passed_count: 1, human_failed_count: 1 },
+      snapshot: { ...run.snapshot, examples: samples },
+      results: samples.slice(0, 4).map((sample, index) => ({ ...run.results[0]!, id: sample.id, name: sample.name,
+        review: index < 2 ? { ...review, candidate: index === 0 ? 1 : 0 } : null,
+        candidate: index === 3 ? { ...arm, error: '模型超时' } : arm,
+      })),
+    }
+    await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+    await page.goto('/evaluations?run=r1')
+    const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+    const navigation = dialog.getByRole('complementary', { name: '评测题目' })
+    for (const [index, label, type] of [[0, '合格', 'success'], [1, '不合格', 'danger'], [2, '待确认', 'warning'], [3, '执行异常', 'warning'], [4, '未生成', 'info']] as const) {
+      const badge = navigation.getByRole('button').nth(index).locator('.question-result')
+      await expect(badge).toHaveText(label)
+      await expect(badge).toHaveClass(new RegExp(`el-tag--${type}`))
+    }
+    await navigation.getByRole('button').filter({ hasText: '游玩人数' }).click()
+    await expect(dialog.locator('.comparison-content h3')).toHaveText('游玩人数的问题')
+    await expect(dialog.getByRole('radio', { name: '不合格', exact: true })).toBeChecked()
+    await navigation.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `/tmp/kbs-evaluation-verdict-tags-${width}.png`, animations: 'disabled' })
+    await navigation.getByRole('button').filter({ hasText: '儿童票价' }).click()
+    await expect(dialog.getByText('执行失败：模型超时', { exact: true })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: '保存人工复核' })).toHaveCount(0)
+  })
+}
 
 test('real progress refreshes from queued to running to generated without claiming acceptance', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })

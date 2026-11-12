@@ -139,7 +139,7 @@ onBeforeUnmount(() => { disposed = true; controller.abort(); ++exampleSequence; 
           <el-table-column label="答案生成" min-width="170">
             <template #default="{ row }"><div class="record-execution" :class="{ failed: row.status === 'FAILED' }">{{ row.status === 'COMPLETED' ? '答案已生成' : runStatus[row.status] }}</div><EvaluationProgress :run="row" compact /></template>
           </el-table-column>
-          <el-table-column label="人工处理" min-width="210"><template #default="{ row }"><EvaluationReviewStatus :run="row" /></template></el-table-column>
+          <el-table-column label="处理情况与结果" min-width="250"><template #default="{ row }"><EvaluationReviewStatus :run="row" /></template></el-table-column>
           <el-table-column label="创建时间" min-width="180"><template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template></el-table-column>
           <el-table-column label="操作" width="140"><template #default="{ row }"><el-button link type="primary" @click="showRun(row.id)">查看逐题对比</el-button></template></el-table-column>
           <template #empty><el-empty :description="runScope === 'single' ? '暂无单题测试记录' : '暂无评测集记录'" :image-size="65" /></template>

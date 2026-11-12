@@ -171,6 +171,8 @@ def test_run_history_filters_before_limit_and_preserves_legacy_scope(app, client
     assert items[0]['scope'] == 'dataset'
     assert items[0]['summary']['human_reviewed_count'] == 1
     assert items[0]['summary']['human']['candidate'] == 0
+    assert items[0]['summary']['human_passed_count'] == 0
+    assert items[0]['summary']['human_failed_count'] == 1
     assert 'results' not in items[0] and 'snapshot' not in items[0]
     singles = client.get(endpoint, headers=admin, query_string={'dataset_id': did, 'scope': 'single'}).json['data']['items']
     assert len(singles) == 50
