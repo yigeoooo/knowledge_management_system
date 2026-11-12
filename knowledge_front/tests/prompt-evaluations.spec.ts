@@ -302,3 +302,87 @@ test('publication selection cannot borrow acceptance from another knowledge base
   await page.getByRole('button', { name: '试测此版本', exact: true }).click()
   await expect(page).toHaveURL(/dataset=d2/)
 })
+
+
+test('one verdict saves without a note and persists both passing and rejected results', async ({ page }) => {
+  let current: import('../src/lib/evaluations').Run = structuredClone(run) as import('../src/lib/evaluations').Run
+  const requests: unknown[] = []
+  await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+  await page.route('**/evaluations/runs/r1/reviews/e1', async route => {
+    const body = route.request().postDataJSON(); requests.push(body)
+    current = { ...current, results: [{ ...current.results![0]!, review: { ...body, reviewed_by: 'admin', reviewed_at: '2026-11-12T00:00:00Z' } }],
+      summary: { ...current.summary, human_reviewed_count: 1, human: { baseline: null, candidate: body.candidate } } }
+    await route.fulfill({ json: { code: 0, data: current } })
+  })
+  await page.goto('/evaluations?run=r1')
+  const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+  await expect(dialog.getByRole('radiogroup')).toHaveCount(1)
+  await expect(dialog.getByRole('combobox')).toHaveCount(0)
+  await expect(dialog.locator('.answer-columns article')).toHaveCount(2)
+  for (const verdict of [1, 0]) {
+    await dialog.getByRole('radiogroup', { name: '本题对比结果' }).getByText(verdict ? '合格' : '不合格', { exact: true }).click()
+    await dialog.getByRole('button', { name: '保存人工复核' }).click()
+    await expect(dialog.getByRole('complementary', { name: '评测题目' })).toContainText(verdict ? '合格 · 已确认' : '不合格 · 已确认')
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: '查看逐题对比' }).click()
+    await expect(dialog.getByRole('radio', { name: verdict ? '合格' : '不合格', exact: true })).toBeChecked()
+    await expect(dialog.getByRole('region', { name: '评测进度', exact: true })).toContainText('已人工确认 1 / 1 题')
+    if (verdict === 1) {
+      await dialog.locator('.human-review').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: '/tmp/kbs-evaluation-single-verdict.png', animations: 'disabled' })
+    }
+  }
+  expect(requests).toEqual([{ candidate: 1, note: '' }, { candidate: 0, note: '' }])
+})
+
+test('real progress refreshes from queued to running to generated without claiming acceptance', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.clock.install()
+  let current = { ...run, status: 'PENDING', completed: 0, total: 2,
+    quality_reasons: ['评测尚未成功完成', '请逐题完成人工复核'],
+    snapshot: { ...run.snapshot, examples: [example, { ...example, id: 'e2', name: '套票内容' }] }, results: [] as typeof run.results }
+  await page.route('**/evaluations/runs', route => route.fulfill({ json: { code: 0, data: { items: [current] } } }))
+  await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+  await page.goto('/evaluations?run=r1')
+  const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+  const progress = dialog.getByRole('region', { name: '评测进度', exact: true })
+  await expect(progress).toContainText('等待开始评测')
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
+  await expect(dialog.locator('.quality-notice')).toHaveCount(0)
+  current = { ...current, status: 'RUNNING', completed: 1, results: run.results }
+  await page.clock.runFor(4200)
+  await expect(progress).toContainText('正在生成对比答案')
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50')
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '1 / 2 题')
+  await expect(dialog.locator('.answer-columns article')).toHaveCount(2)
+  await expect(dialog.getByRole('button', { name: '保存人工复核' })).toHaveCount(0)
+  await page.screenshot({ path: '/tmp/kbs-evaluation-progress-running.png', animations: 'disabled' })
+  current = { ...current, status: 'COMPLETED', completed: 2,
+    results: [...run.results, { ...run.results[0]!, id: 'e2', name: '套票内容' }], quality_reasons: ['请逐题完成人工复核'] }
+  await page.clock.runFor(4200)
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+  await expect(progress).toContainText('已人工确认 0 / 2 题')
+  await expect(progress).toContainText('执行完成不代表通过验收')
+  await expect(dialog.getByRole('button', { name: '保存人工复核' })).toBeDisabled()
+  await expect(dialog.getByText('请逐题完成人工复核', { exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('progressbar', { name: '评测执行进度' })).toHaveAttribute('aria-valuenow', '100')
+  await page.getByRole('button', { name: '查看逐题对比' }).click()
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+})
+
+for (const [completed, total] of [[0, 0], [1, 2], [1, 1]]) {
+  test(`failed progress remains accurate and cannot be approved at ${completed}/${total}`, async ({ page }) => {
+    const current = { ...run, status: 'FAILED', completed, total, error_message: '模型调用超时',
+      results: completed ? [{ ...run.results[0]!, candidate: { ...arm, error: 'TimeoutError' } }] : [],
+      snapshot: { ...run.snapshot, examples: total ? [example] : [] }, quality_reasons: ['存在执行失败的测试题'] }
+    await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: current } }))
+    await page.goto('/evaluations?run=r1')
+    const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+    const progress = dialog.getByRole('region', { name: '评测进度', exact: true })
+    await expect(progress).toContainText('评测执行异常')
+    await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', String(total ? Math.floor(completed! / total * 100) : 0))
+    await expect(dialog.getByRole('button', { name: '保存人工复核' })).toHaveCount(0)
+    await expect(dialog.getByText('模型调用超时', { exact: true })).toBeVisible()
+  })
+}

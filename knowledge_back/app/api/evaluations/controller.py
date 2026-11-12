@@ -583,24 +583,30 @@ def review_result(id, example_id):
     data = body()
     if row.status not in {"COMPLETED", "FAILED"}:
         raise ApiError("请等待评测结束后复核结果", 409)
-    if any(
-        type(data.get(k)) is not int or data[k] not in (0, 1) for k in ("baseline", "candidate")
-    ):
-        raise ApiError("请分别选择基线和候选答案是否合格", 422)
-    note = text(data.get("note"), "复核说明", 2000)
+    if type(data.get("candidate")) is not int or data["candidate"] not in (0, 1):
+        raise ApiError("请选择本题候选答案是否合格", 422)
+    # Older clients may still submit a separate baseline rating.
+    if "baseline" in data and (type(data["baseline"]) is not int or data["baseline"] not in (0, 1)):
+        raise ApiError("基线答案合格标记需为 0 或 1", 422)
+    note = data.get("note", "")
+    if not isinstance(note, str) or len(note.strip()) > 2000 or "\x00" in note:
+        raise ApiError("复核说明需为不超过 2000 字的文本且不能含空字符", 422)
     updated = json.loads(json.dumps(row.results))
     result = next((r for r in updated if r["id"] == str(example_id)), None)
     if result is None:
         raise ApiError("评测结果不存在", 404)
     if any(not result.get(arm) or result[arm].get("error") for arm in ("baseline", "candidate")):
         raise ApiError("运行失败的答案不能作为质量合格样本", 409)
+    previous_baseline = (result.get("review") or {}).get("baseline")
     result["review"] = {
-        "baseline": data["baseline"],
         "candidate": data["candidate"],
-        "note": note,
+        "note": note.strip(),
         "reviewed_by": str(g.user.id),
         "reviewed_at": now().isoformat(),
     }
+    baseline = data.get("baseline", previous_baseline)
+    if baseline is not None:
+        result["review"]["baseline"] = baseline
     row.results = updated
     audit("evaluation.result.review", row, {"example_id": str(example_id), **result["review"]})
     db.session.commit()

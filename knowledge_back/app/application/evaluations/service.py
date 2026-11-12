@@ -179,12 +179,13 @@ def aggregate(results):
         for k in keys
     }
     reviews = [r["review"] for r in results if r.get("review")]
+    ratings = {a: [r[a] for r in reviews if r.get(a) is not None] for a in ("baseline", "candidate")}
     return {
         **arms,
         "paired_count": len(pairs),
         "delta": delta,
         "human_reviewed_count": len(reviews),
         "human": {
-            a: mean(r[a] for r in reviews) if reviews else None for a in ("baseline", "candidate")
+            a: mean(values) if values else None for a, values in ratings.items()
         },
     }

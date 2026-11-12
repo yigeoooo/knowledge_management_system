@@ -104,6 +104,12 @@ def test_pair_freezes_drafts_labels_and_survives_example_deletion(app, client, a
     assert detail['summary']['human_reviewed_count']==0
     result=client.post(f"/api/v1/evaluations/runs/{run['id']}/reviews/{example['id']}",headers=admin,json={'baseline':0,'candidate':1,'note':'候选保留了价格和条件'})
     assert result.json['data']['summary']['human']=={'baseline':0,'candidate':1}
+    # A new-style review preserves the old baseline judgment without requiring it again.
+    updated = client.post(f"/api/v1/evaluations/runs/{run['id']}/reviews/{example['id']}",
+        headers=admin, json={'candidate': 0})
+    assert updated.status_code == 200
+    assert updated.json['data']['summary']['human'] == {'baseline': 0, 'candidate': 0}
+    assert updated.json['data']['results'][0]['review']['note'] == ''
 
 
 def test_index_change_stops_comparison_and_lease_is_fenced(app, client, admin, dataset, monkeypatch):
@@ -179,7 +185,7 @@ def approved_run(app, client, admin, dataset, monkeypatch, candidate_id):
         'cited_document_ids': example['reference']['expected_document_ids']})
     assert evaluation_worker.process_one(app)
     response = client.post(f"/api/v1/evaluations/runs/{run['id']}/reviews/{example['id']}",
-        headers=admin, json={'baseline': 1, 'candidate': 1, 'note': '已核实价格、单位及适用条件'})
+        headers=admin, json={'candidate': 1})
     assert response.status_code == 200, response.json
     return response.json['data']
 
@@ -389,3 +395,62 @@ def test_evaluation_preview_does_not_grant_document_management_or_other_base_acc
     with app.app_context():
         doc = db.session.get(Document, UUID(doc_id)); doc.status = 'archived'; db.session.commit()
     assert client.get(path, headers=curator).status_code == 404 and len(reads) == 1
+
+
+def test_single_verdict_validation_and_release_gate(app, client, admin, dataset, monkeypatch):
+    _, candidate = save(client, admin)
+    run = approved_run(app, client, admin, dataset, monkeypatch, candidate['id'])
+    endpoint = f"/api/v1/evaluations/runs/{run['id']}/reviews/{dataset[1]['id']}"
+    review = run['results'][0]['review']
+    assert 'baseline' not in review and review['candidate'] == 1 and review['note'] == ''
+    assert review['reviewed_by'] and review['reviewed_at']
+    assert run['summary']['human'] == {'baseline': None, 'candidate': 1}
+    assert run['summary']['human_reviewed_count'] == 1
+    for invalid in [{}, {'candidate': None}, {'candidate': True}, {'candidate': '1'},
+                    {'candidate': 1.0}, {'candidate': 2}, {'candidate': -1},
+                    {'candidate': 1, 'note': None}, {'candidate': 1, 'note': 'x' * 2001},
+                    {'candidate': 1, 'note': '\x00'}, {'candidate': 1, 'baseline': True}]:
+        response = client.post(endpoint, headers=admin, json=invalid)
+        assert response.status_code == 422, response.json
+    detail = client.get(f"/api/v1/evaluations/runs/{run['id']}", headers=admin).json['data']
+    assert detail['results'][0]['review'] == review
+    response = client.post(endpoint, headers=admin, json={'candidate': 0, 'note': '  遗漏适用条件  '})
+    assert response.status_code == 200
+    rejected = response.json['data']
+    assert rejected['results'][0]['review']['note'] == '遗漏适用条件'
+    assert rejected['summary']['human'] == {'baseline': None, 'candidate': 0}
+    assert '候选答案存在人工复核不合格项' in rejected['quality_reasons']
+    check = '/api/v1/prompts/answer_robot/versions/2/release-check'
+    assert not client.get(check, headers=admin).json['data']['eligible']
+    publish = {'version': 2, 'expected_generation': 1, 'evaluation_run_id': run['id']}
+    assert client.post('/api/v1/prompts/answer_robot/publish', headers=admin, json=publish).status_code == 409
+    assert client.post(endpoint, headers=admin, json={'candidate': 1}).status_code == 200
+    assert client.get(check, headers=admin).json['data']['eligible']
+    assert client.post('/api/v1/prompts/answer_robot/publish', headers=admin, json=publish).status_code == 200
+
+
+def test_mixed_reviews_do_not_invent_baseline_ratings():
+    pair = {'baseline': {'scores': {}, 'error': None}, 'candidate': {'scores': {}, 'error': None}}
+    result = aggregate([
+        {**pair, 'review': {'baseline': 0, 'candidate': 1}},
+        {**pair, 'review': {'candidate': 0}},
+        {**pair, 'review': None},
+    ])
+    assert result['human_reviewed_count'] == 2
+    assert result['human'] == {'baseline': 0, 'candidate': 0.5}
+    assert aggregate([])['human'] == {'baseline': None, 'candidate': None}
+
+
+def test_single_verdict_cannot_approve_running_or_failed_answers(app, client, admin, dataset, monkeypatch):
+    did, example, _ = dataset
+    run = client.post('/api/v1/evaluations/runs', headers=admin,
+        json={'dataset_id': did, 'name': '异常评测', 'reviewed_only': False}).json['data']
+    endpoint = f"/api/v1/evaluations/runs/{run['id']}/reviews/{example['id']}"
+    assert client.post(endpoint, headers=admin, json={'candidate': 1}).status_code == 409
+    def fail(*args, **kwargs):
+        raise TimeoutError('provider failed')
+    monkeypatch.setattr(evaluation_worker, 'evaluate_input', fail)
+    assert evaluation_worker.process_one(app)
+    detail = client.get(f"/api/v1/evaluations/runs/{run['id']}", headers=admin).json['data']
+    assert detail['status'] == 'FAILED' and detail['completed'] == detail['total'] == 1
+    assert client.post(endpoint, headers=admin, json={'candidate': 1}).status_code == 409
