@@ -1,0 +1,304 @@
+import { expect, test } from '@playwright/test'
+
+const prompt = { key: 'answer_robot', name: '机器人简洁回答', active_version: 1, generation: 1 }
+const original = { id: 'v1', version: 1, content: '请根据资料用简洁的自然语言回答问题，不得编造事实。', note: '初始版本', created_at: '2026-11-12T00:00:00Z', sha256: 'original' }
+const dataset = { id: 'd1', name: '江源杯测试集', knowledge_base_id: 'kb1', knowledge_base_name: '宜宾江源杯知识库', description: '待审核标注草稿' }
+const example = { id: 'e1', name: '套票价格', inputs: { question: '地质科普游多少钱一人？', robot: true, context: {} }, reference: { expected_document_ids: ['doc1'], expected_documents: ['套票产品内容'], answer_points: ['99元'], expected_status: 'SUCCESS', reference_answer: '99元/人。', source_notes: 'Sheet1 第5行', forbidden_points: [] }, status: 'draft', revision: 1, reviewed_by: null }
+const arm = { outputs: { answer: '99元/人。', status: 'SUCCESS', latency_ms: 1200, retrieved_documents: ['套票产品内容'], cited_documents: ['套票产品内容'], token_usage: { input_tokens: 200, output_tokens: 10 } }, scores: { status_accuracy: 1 }, error: null }
+const run = { id: 'r1', name: '首轮草稿对比', dataset_id: 'd1', status: 'COMPLETED', created_at: '2026-11-12T00:00:00Z', completed: 1, total: 1, reviewed_only: false, summary: { baseline: { metrics: { status_accuracy: { value: 1, count: 1 } } }, candidate: { metrics: { status_accuracy: { value: 1, count: 1 } } }, delta: { status_accuracy: 0 }, paired_count: 1, human_reviewed_count: 0, human: { baseline: null, candidate: null } }, snapshot: { dataset_name: '江源杯测试集', dataset_hash: 'dataset-hash', environment_hash: 'environment-hash', environment: {}, examples: [example], baseline: { answer_robot: original }, candidate: { answer_robot: original } }, results: [{ id: 'e1', name: example.name, baseline: arm, candidate: arm, review: null }] }
+
+test.beforeEach(async ({ page }) => {
+  const versions = [original]
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    let data: unknown
+    if (path.endsWith('/auth/refresh')) data = { access_token: 'test', user: { display_name: '管理员' }, pages: [
+      { code: 'prompts', name: '提示词管理', route_path: '/prompts', route_name: 'PromptManagement', component_key: 'PromptManagement', page_type: 'menu', is_visible: true },
+      { code: 'evaluations', name: '质量评测', route_path: '/evaluations', route_name: 'EvaluationManagement', component_key: 'EvaluationManagement', page_type: 'menu', is_visible: true },
+      { code: 'qa_logs', name: '问答日志', route_path: '/qa-logs', route_name: 'ConversationHistory', component_key: 'ConversationHistory', page_type: 'menu', is_visible: true },
+    ] }
+    else if (path.endsWith('/prompts')) data = { items: [prompt] }
+    else if (path.endsWith('/prompts/answer_robot')) data = { ...prompt, versions }
+    else if (path.endsWith('/prompts/answer_robot/versions')) { const body = route.request().postDataJSON(); const version = { ...original, id: 'v2', version: 2, content: body.content, note: body.note }; versions.unshift(version); data = version }
+    else if (path.endsWith('/release-check')) data = { eligible: false, evaluation_run_id: null, dataset_id: 'd1', datasets: [dataset], reasons: ['此版本尚未通过质量评测，请先试测并完成人工复核'], runs: [] }
+    else if (path.endsWith('/evaluations/datasets/d1/documents')) data = { items: [{ id: 'doc1', title: '套票产品内容', filename: '套票产品内容.xlsx', indexed: true }, { id: 'doc2', title: '套票产品内容', filename: '副本.xlsx', indexed: true }] }
+    else if (path.endsWith('/documents/doc1/preview') || path.endsWith('/documents/doc2/preview')) data = { kind: 'word', document: { id: path.includes('doc2') ? 'doc2' : 'doc1', title: '套票产品内容', indexed: true }, version: { id: 'ver1', number: 1, filename: '产品说明.docx' }, html: '<h2>地质科普游</h2><p>地质科普游票价 99 元/人。</p>' + '<p>对照知识库文档里的适用条件和活动项目。</p>'.repeat(35) }
+    else if (path.endsWith('/evaluations/datasets')) data = { items: [dataset] }
+    else if (path.endsWith('/evaluations/options')) data = { knowledge_bases: [{ id: 'kb1', name: '宜宾江源杯知识库' }] }
+    else if (path.endsWith('/examples')) data = { items: [example] }
+    else if (path.endsWith('/evaluations/runs')) data = { items: [run] }
+    else if (path.endsWith('/evaluations/runs/r1')) data = run
+    else throw new Error(`Unexpected request: ${path}`)
+    await route.fulfill({ json: { code: 0, data } })
+  })
+})
+
+test('saving a draft preserves publication and sends its version to evaluation', async ({ page }) => {
+  await page.goto('/prompts')
+  await expect(page.locator('.editor-heading')).toContainText('当前发布 v1')
+  await page.locator('.prompt-editor textarea').fill(original.content + ' 只回答当前问题的核心内容。')
+  await page.getByPlaceholder('例如：缩短机器人回答，同时保留价格和适用条件').fill('收紧回答范围')
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click()
+  await expect(page.locator('.editor-heading')).toContainText('当前发布 v1')
+  await expect(page.getByRole('button', { name: '发布所选版本' })).toBeDisabled()
+  await expect(page.getByText('此版本尚未通过质量评测，请先试测并完成人工复核')).toBeVisible()
+  await page.screenshot({ path: '/tmp/kbs-prompt-studio.png', fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: '试测此版本' }).click()
+  await expect(page).toHaveURL(/evaluations\?prompt=answer_robot&version=v2/)
+  await expect(page.getByRole('tab', { name: '发起版本对比' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('.experiment-form')).toContainText('v2 · 收紧回答范围')
+  await expect(page.getByRole('button', { name: '开始对比评测' })).toBeDisabled()
+})
+
+for (const width of [1440, 390]) {
+  test(`draft labels and paired comparison stay legible at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto('/evaluations')
+    await expect(page.getByText('草稿', { exact: true })).toBeVisible()
+    await page.getByRole('tab', { name: '实验记录' }).click()
+    await page.getByRole('button', { name: '查看逐题对比' }).click()
+    const dialog = page.getByRole('dialog', { name: '评测对比详情' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('草稿试测 · 非验收结论', { exact: true })).toBeVisible()
+    await expect(dialog.locator('.answer-columns article')).toHaveCount(2)
+    await expect(dialog.locator('.comparison-content h3')).toHaveText(example.inputs.question)
+    await expect(dialog.getByRole('button', { name: '保存人工复核' })).toBeDisabled()
+    const panel = page.locator('.el-dialog.evaluation-dialog')
+    const bounds = await panel.boundingBox()
+    expect(bounds!.width).toBeLessThan(width)
+    expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+    if (width === 1440) await page.screenshot({ path: '/tmp/kbs-evaluation-comparison.png', fullPage: true, animations: 'disabled' })
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('tab', { name: '实验记录' })).toHaveAttribute('aria-selected', 'true')
+  })
+}
+
+test('expected documents are selected from the dataset and saved as IDs', async ({ page }) => {
+  let saved: { reference: { expected_document_ids: string[]; expected_documents?: string[] } } | undefined
+  await page.route('**/api/v1/evaluations/examples/e1', async route => {
+    saved = route.request().postDataJSON()
+    await route.fulfill({ json: { code: 0, data: example } })
+  })
+  await page.goto('/evaluations')
+  await page.getByRole('button', { name: '查看 / 编辑', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '查看 / 编辑测试题' })
+  const picker = dialog.getByRole('combobox', { name: '预期命中的文档', exact: true })
+  await picker.focus()
+  await picker.fill('套票')
+  await expect(page.getByRole('option').filter({ hasText: '副本.xlsx' })).toBeVisible()
+  await page.getByRole('option').filter({ hasText: '副本.xlsx' }).click()
+  await picker.press('Escape')
+  await page.screenshot({ path: '/tmp/kbs-document-picker.png', fullPage: true, animations: 'disabled' })
+  await dialog.getByRole('button', { name: '保存草稿' }).click()
+  await expect(dialog).toBeHidden()
+  expect(saved?.reference.expected_document_ids).toEqual(['doc1', 'doc2'])
+  expect(saved?.reference.expected_documents).toBeUndefined()
+})
+
+test('publication is unlocked by a qualifying evaluation and submits its evidence', async ({ page }) => {
+  let allowed = false
+  let published: { evaluation_run_id: string; version: number } | undefined
+  await page.route('**/release-check*', route => route.fulfill({ json: { code: 0, data: {
+    eligible: allowed, evaluation_run_id: allowed ? 'approved-run' : null, dataset_id: 'd1', datasets: [dataset],
+    reasons: allowed ? [] : ['请逐题完成人工复核'],
+    runs: [{ id: 'approved-run', name: '已审核验收集', eligible: allowed, reasons: [] }],
+  } } }))
+  await page.route('**/prompts/answer_robot/publish', async route => {
+    published = route.request().postDataJSON()
+    await route.fulfill({ json: { code: 0, data: { ...prompt, active_version: 2, generation: 2 } } })
+  })
+  await page.goto('/prompts')
+  await page.locator('.prompt-editor textarea').fill(original.content + ' 请优先回答票价。')
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click()
+  await expect(page.getByText('请逐题完成人工复核')).toBeVisible()
+  await expect(page.getByRole('button', { name: '发布所选版本' })).toBeDisabled()
+  allowed = true
+  await page.getByRole('button', { name: '刷新发布条件' }).click()
+  await expect(page.getByRole('button', { name: '发布所选版本' })).toBeEnabled()
+  await page.getByRole('button', { name: '发布所选版本' }).click()
+  await page.getByRole('button', { name: '确认发布', exact: true }).click()
+  await expect.poll(() => published?.evaluation_run_id).toBe('approved-run')
+  expect(published?.version).toBe(2)
+})
+
+for (const width of [1500, 390]) {
+  test(`authoring keeps the question while previewing documents and enables in one save at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    let saved: { status: string; inputs: { question: string; context: object }; reference: { expected_document_ids: string[] } } | undefined
+    await page.route('**/api/v1/evaluations/examples/e1', async route => {
+      saved = route.request().postDataJSON()
+      await route.fulfill({ json: { code: 0, data: { ...example, status: saved?.status } } })
+    })
+    await page.goto('/evaluations')
+    await expect(page.getByRole('button', { name: '审核', exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: '查看 / 编辑', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '查看 / 编辑测试题' })
+    const question = dialog.getByRole('textbox', { name: '测试问题', exact: true })
+    await question.fill('新问题：票价包含哪些项目？')
+    await expect(dialog.getByRole('region', { name: '历史问答' })).toHaveCount(0)
+    if (width < 1024) await dialog.getByText('资料预览', { exact: true }).click()
+    const sources = dialog.getByRole('region', { name: '知识库资料预览' })
+    await expect(sources.getByText('地质科普游票价 99 元/人。')).toBeVisible()
+    const workspace = await dialog.locator('.example-workspace').boundingBox()
+    const previewBounds = await sources.locator('.source-content').boundingBox()
+    expect(previewBounds!.y + previewBounds!.height).toBeLessThanOrEqual(workspace!.y + workspace!.height + 1)
+    await sources.getByRole('combobox', { name: '预览文档' }).click()
+    await page.getByRole('option').filter({ hasText: '副本.xlsx' }).click()
+    await sources.getByRole('button', { name: '加入预期文档', exact: true }).click()
+    await expect(sources.getByRole('button', { name: '已加入预期文档' })).toBeDisabled()
+    if (width >= 1024) {
+      await sources.getByRole('button', { name: '放大预览' }).click()
+      await expect(question).toBeHidden()
+      await sources.getByRole('button', { name: '返回对照' }).click()
+    } else await dialog.getByText('题目编辑', { exact: true }).click()
+    await expect(question).toHaveValue('新问题：票价包含哪些项目？')
+    const panel = page.locator('.el-dialog.example-dialog')
+    expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+    await page.screenshot({ path: `/tmp/kbs-authoring-${width}.png`, animations: 'disabled' })
+    await dialog.getByRole('button', { name: '保存并启用', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    expect(saved?.status).toBe('enabled')
+    expect(saved?.reference.expected_document_ids).toEqual(['doc1', 'doc2'])
+    expect(saved?.inputs.context).toEqual({})
+  })
+}
+
+test('history only appears for follow-up or summary and uses ordinary question fields', async ({ page }) => {
+  let saved: { inputs: { task: string; context: { turns: { question: string; answer: string }[] } } } | undefined
+  await page.route('**/api/v1/evaluations/examples/e1', async route => {
+    saved = route.request().postDataJSON()
+    await route.fulfill({ json: { code: 0, data: example } })
+  })
+  await page.goto('/evaluations')
+  await page.getByRole('button', { name: '查看 / 编辑', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '查看 / 编辑测试题' })
+  await expect(dialog.getByRole('region', { name: '历史问答' })).toHaveCount(0)
+  await dialog.locator('.el-select').filter({ has: page.locator('input[aria-label="测试任务"]') }).click()
+  await page.getByRole('option', { name: '连续追问（带历史问答）', exact: true }).click()
+  await dialog.getByRole('textbox', { name: '第 1 轮问题', exact: true }).fill('地质科普游包括什么？')
+  await dialog.getByRole('textbox', { name: '第 1 轮回答', exact: true }).fill('包含景区门票、体验馆和护照。')
+  await dialog.getByRole('button', { name: '保存并启用', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  expect(saved?.inputs.task).toBe('answer')
+  expect(saved?.inputs.context.turns).toEqual([{ question: '地质科普游包括什么？', answer: '包含景区门票、体验馆和护照。' }])
+})
+
+for (const [task, width] of [['连续追问（带历史问答）', 2048], ['会话摘要', 390]] as const) {
+  test(`import previews real question-answer pairs before replacing history for ${task} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1080 })
+    const conversation = { id: 'c1', title: '票价咨询会话', last_turn_no: 4, last_message_at: '2026-11-12T00:00:00Z' }
+    const turns = [
+      { id: 't1', turn_no: 1, question: '地质科普游多少钱？', answer: '票价为 99 元/人。', status: 'SUCCESS', importable: true },
+      { id: 't2', turn_no: 2, question: '包含什么项目？', answer: '包括景区门票和体验馆。', status: 'SUCCESS', importable: true },
+      { id: 't3', turn_no: 3, question: '失败的问题', answer: '', status: 'FAILED', importable: false },
+      { id: 't4', turn_no: 4, question: '后续问题', answer: '不应导入的后续答案', status: 'SUCCESS', importable: true },
+    ]
+    const queries: string[] = []
+    await page.route('**/evaluations/datasets/d1/history/**', async route => {
+      const url = new URL(route.request().url()); queries.push(url.search)
+      let data: object
+      if (url.pathname.endsWith('/owners')) data = { items: [{ id: 'owner1', name: '测试设备', identity: 'R-1', conversation_count: 1 }], total: 1 }
+      else if (url.pathname.endsWith('/conversations')) data = { items: [conversation], total: 1 }
+      else if (url.pathname.endsWith('/turns')) data = { items: turns, total: 4, conversation }
+      else {
+        const start = Number(url.searchParams.get('start')), end = Number(url.searchParams.get('end'))
+        data = { context: { summary: '', turns: turns.filter(t => t.turn_no >= start && t.turn_no <= end && t.importable).map(t => ({ question: t.question, answer: t.answer, turn_no: t.turn_no, source_log_id: t.id, source_conversation_id: 'c1' })) }, conversation, skipped_count: 0, start_turn_no: start, end_turn_no: end }
+      }
+      await route.fulfill({ json: { code: 0, data } })
+    })
+    let saved: { inputs: { task: string; question: string; context: { summary: string; turns: { question: string; answer: string; source_log_id: string }[] } }; reference: typeof example.reference } | undefined
+    await page.route('**/evaluations/examples/e1', async route => { saved = route.request().postDataJSON(); await route.fulfill({ json: { code: 0, data: example } }) })
+    await page.goto('/evaluations')
+    await page.getByRole('button', { name: '查看 / 编辑', exact: true }).click()
+    const editor = page.getByRole('dialog', { name: '查看 / 编辑测试题' })
+    if (width > 1000) {
+      expect((await page.locator('.el-dialog.example-dialog').boundingBox())!.width).toBeGreaterThan(1800)
+      const reference = await editor.getByRole('region', { name: '知识库资料预览' }).boundingBox()
+      const form = await editor.locator('.example-editor').boundingBox()
+      expect(reference!.width).toBeGreaterThan(form!.width)
+    }
+    await editor.locator('.el-select').filter({ has: page.locator('input[aria-label="测试任务"]') }).click()
+    await page.getByRole('option', { name: task, exact: true }).click()
+    await editor.getByRole('textbox', { name: '第 1 轮问题', exact: true }).fill('旧问题')
+    await editor.getByRole('textbox', { name: '第 1 轮回答', exact: true }).fill('旧回答')
+    await editor.getByRole('textbox', { name: '更早的对话摘要（可选）' }).fill('不能混入的旧摘要')
+    await editor.getByRole('button', { name: '从问答日志导入', exact: true }).click()
+    const picker = page.getByRole('dialog', { name: '从问答日志导入', exact: true })
+    await picker.getByRole('combobox', { name: '选择机器人' }).click()
+    await page.getByRole('option', { name: '测试设备 · R-1', exact: true }).click()
+    await picker.getByRole('button').filter({ hasText: '票价咨询会话' }).click()
+    const preview = picker.getByRole('region', { name: '会话问答预览' })
+    await expect(preview.getByText('票价为 99 元/人。', { exact: true })).toBeVisible()
+    await expect(preview.locator('.import-turn').filter({ hasText: '失败的问题' }).getByRole('button')).toHaveCount(0)
+    await preview.locator('.import-turn').filter({ hasText: '包含什么项目？' }).getByRole('button', { name: '到此问答结束' }).click()
+    await picker.getByRole('button', { name: '预览待导入问答' }).click()
+    const selected = picker.getByRole('region', { name: '待导入问答预览' })
+    await expect(selected.locator('.import-turn')).toHaveCount(2)
+    await expect(selected).toContainText('票价为 99 元/人。')
+    await expect(selected).not.toContainText('不应导入的后续答案')
+    await expect(editor.getByRole('textbox', { name: '第 1 轮问题', exact: true })).toHaveValue('旧问题')
+    const importPanel = page.locator('.el-dialog.history-import-dialog')
+    const bounds = await importPanel.boundingBox()
+    expect(bounds!.width).toBeLessThan(width)
+    expect(await importPanel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+    await page.screenshot({ path: `/tmp/kbs-history-import-${width}.png`, animations: 'disabled' })
+    await picker.getByRole('button', { name: '替换并导入', exact: true }).click()
+    await expect(picker).toBeHidden()
+    await expect(editor.getByRole('textbox', { name: '第 1 轮问题', exact: true })).toHaveValue(turns[0]!.question)
+    await expect(editor.getByRole('textbox', { name: '第 2 轮回答', exact: true })).toHaveValue(turns[1]!.answer)
+    await expect(editor.getByRole('textbox', { name: '更早的对话摘要（可选）' })).toHaveValue('')
+    await editor.getByRole('textbox', { name: '第 1 轮回答', exact: true }).fill('99 元/人，已核对资料。')
+    await editor.getByRole('button', { name: '保存并启用', exact: true }).click()
+    await expect(editor).toBeHidden()
+    expect(saved?.inputs.context.turns.map(t => t.source_log_id)).toEqual(['t1', 't2'])
+    expect(saved?.inputs.context.turns[0]?.answer).toBe('99 元/人，已核对资料。')
+    expect(saved?.inputs.question).toBe(example.inputs.question)
+    expect(saved?.reference.reference_answer).toBe(example.reference.reference_answer)
+    expect(saved?.inputs.task).toBe(task === '会话摘要' ? 'summary' : 'answer')
+    expect(queries.every(query => query.includes('source_type=ROBOT'))).toBe(true)
+  })
+}
+
+
+test('a knowledge base with a dataset cannot create another one', async ({ page }) => {
+  await page.goto('/evaluations')
+  await expect(page.getByRole('button', { name: '新建评测集', exact: true })).toBeDisabled()
+  await expect(page.getByText('当前知识库均已建立评测集，可选择现有评测集继续添加或修改题目。')).toBeVisible()
+})
+
+test('dataset creation only offers knowledge bases without a dataset', async ({ page }) => {
+  await page.route('**/evaluations/options', route => route.fulfill({ json: { code: 0, data: { knowledge_bases: [
+    { id: 'kb1', name: '江源杯', dataset_id: 'd1' }, { id: 'kb2', name: '新知识库', dataset_id: null },
+  ] } } }))
+  await page.goto('/evaluations')
+  await page.getByRole('button', { name: '新建评测集', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '新建评测集', exact: true })
+  await dialog.locator('.el-select').filter({ has: page.locator('input[aria-label="创建评测集的知识库"]') }).click()
+  await expect(page.getByRole('option', { name: '江源杯 · 已有评测集', exact: true })).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByRole('option', { name: '新知识库', exact: true })).toHaveAttribute('aria-selected', 'true')
+})
+
+test('publication selection cannot borrow acceptance from another knowledge base', async ({ page }) => {
+  const other = { ...dataset, id: 'd2', name: '另一个知识库评测', knowledge_base_id: 'kb2', knowledge_base_name: '新知识库' }
+  let requestedDataset = ''
+  await page.route('**/release-check*', async route => {
+    const id = new URL(route.request().url()).searchParams.get('dataset_id') || ''
+    requestedDataset = id
+    await route.fulfill({ json: { code: 0, data: { eligible: id === 'd1', dataset_id: id || null, datasets: [dataset, other], evaluation_run_id: id === 'd1' ? 'r1' : null, runs: id === 'd1' ? [{ id: 'r1', name: '验收实验', eligible: true, reasons: [] }] : [], reasons: id ? ['此知识库暂无合格实验'] : ['请选择用于发布验收的知识库评测集'] } } })
+  })
+  await page.goto('/prompts')
+  await page.locator('.prompt-editor textarea').fill(original.content + ' 请核对价格条件。')
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click()
+  await expect(page.getByRole('button', { name: '发布所选版本', exact: true })).toBeDisabled()
+  const selector = page.locator('.el-select').filter({ has: page.locator('input[aria-label="发布验收评测集"]') })
+  await selector.click()
+  await page.getByRole('option', { name: '宜宾江源杯知识库 · 江源杯测试集', exact: true }).click()
+  await expect(page.getByRole('button', { name: '发布所选版本', exact: true })).toBeEnabled()
+  await selector.click()
+  await page.getByRole('option', { name: '新知识库 · 另一个知识库评测', exact: true }).click()
+  await expect(page.getByRole('button', { name: '发布所选版本', exact: true })).toBeDisabled()
+  await expect.poll(() => requestedDataset).toBe('d2')
+  await page.getByRole('button', { name: '试测此版本', exact: true }).click()
+  await expect(page).toHaveURL(/dataset=d2/)
+})

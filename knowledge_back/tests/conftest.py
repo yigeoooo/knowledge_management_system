@@ -19,6 +19,7 @@ def app(tmp_path, monkeypatch):
             "RATELIMIT_ENABLED": False,
             "SESSION_COOKIE_SECURE": False,
             "LANGCHAIN_CHAT_ENABLED": False,
+            "LANGSMITH_TRACING": False,
             "QA_WORKER_AUTOSTART": False,
         }
     )

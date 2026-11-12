@@ -8,6 +8,54 @@ from ..security.password import password_hasher
 
 
 def register_cli(app):
+    @app.cli.command("evaluation-worker")
+    @click.option("--once", is_flag=True, help="处理待评测任务后退出。")
+    def evaluation_worker(once):
+        from ..workers.evaluation_worker import run_worker
+        click.echo(f"已处理 {run_worker(app, once=once)} 个评测任务。")
+
+    @app.cli.command("rag-info")
+    def rag_info():
+        """Show architecture switches without credentials or document contents."""
+        import json
+        from importlib.metadata import version
+        click.echo(json.dumps({"pipeline": "rag-v2",
+            "packages": {p: version(p) for p in ("langchain-core", "langgraph", "langsmith")},
+            "langchain_chat": app.config["LANGCHAIN_CHAT_ENABLED"],
+            "langsmith_configured": app.config["LANGSMITH_CONFIGURED"],
+            "langsmith_capture_content": app.config["LANGSMITH_CAPTURE_CONTENT"],
+            "reranker": app.config["QA_RERANK_PROVIDER"] if app.config["QA_RERANK_ENABLED"] else "disabled",
+            "checkpointer": "disabled; durable business worker owns retries"}, indent=2))
+
+    @app.cli.command("rag-evaluate")
+    @click.option("--dataset", required=True, type=click.Path(exists=True, dir_okay=False))
+    @click.option("--report", type=click.Path(dir_okay=False), default="rag-report.json")
+    @click.option("--retrieval-only", is_flag=True)
+    @click.option("--publish", is_flag=True, help="将指定的完整评测集和实验结果上传到 LangSmith。")
+    @click.option("--dataset-name", default=None, help="上传时必填，使用新的数据集名称。")
+    def rag_evaluate(dataset, report, retrieval_only, publish, dataset_name):
+        import json
+        from pathlib import Path
+
+        from ..application.qa.evaluation import load_examples, publish_experiment, run_local
+        try:
+            examples = load_examples(dataset)
+            if publish:
+                if not dataset_name:
+                    raise click.ClickException("--publish 需要 --dataset-name")
+                publish_experiment(examples, dataset_name=dataset_name, retrieval_only=retrieval_only)
+                click.echo("LangSmith 实验已完成。")
+            else:
+                output = run_local(examples, retrieval_only=retrieval_only)
+                Path(report).write_text(json.dumps(output, ensure_ascii=False, indent=2))
+                click.echo(f"评测完成：{len(examples)} 条，失败 {output['failures']} 条；报告 {report}")
+                if output["failures"]:
+                    raise click.ClickException("部分样本执行失败，详见本地报告")
+        except click.ClickException:
+            raise
+        except Exception as error:  # noqa: BLE001 - CLI errors must not expose credentials
+            raise click.ClickException(f"评测失败（{type(error).__name__}），请检查配置和样本格式") from None
+
     @app.cli.command("qa-worker")
     @click.option("--once", is_flag=True, help="处理一个待回答问题后退出。")
     def qa_worker(once):

@@ -13,6 +13,13 @@ from .audit import AuditLog
 from .base import Record, now
 from .conversation import QAConversation
 from .document import Document, DocumentChunk, DocumentVersion, IndexTask
+from .experiments import (
+    EvaluationDataset,
+    EvaluationExample,
+    EvaluationRun,
+    PromptTemplate,
+    PromptVersion,
+)
 from .identity import Page, Role, RolePagePermission, User, UserSession
 from .knowledge_base import KnowledgeBase
 from .qa import QALog
@@ -25,9 +32,14 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "DocumentVersion",
+    "EvaluationDataset",
+    "EvaluationExample",
+    "EvaluationRun",
     "IndexTask",
     "KnowledgeBase",
     "Page",
+    "PromptTemplate",
+    "PromptVersion",
     "QAConversation",
     "QALog",
     "Record",

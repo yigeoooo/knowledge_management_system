@@ -5,18 +5,22 @@ from pathlib import PurePath
 from threading import Lock
 
 from flask import current_app
+from langchain_core.runnables import RunnableLambda
 
+from ..application.documents.index_profile import configured_profile, profile_hash
 from ..core.extensions import db
 from ..entities import Document, DocumentChunk, DocumentVersion, IndexTask, now
 from ..integrations.ai.embedding_adapter import EmbeddingError, embed_contents, embed_texts
+from ..integrations.ai.langchain_adapters import DashScopeEmbeddings
+from ..integrations.ai.langsmith_config import tracing_scope
 from ..integrations.storage.minio_adapter import (
     StorageError,
     delete_object,
     presign_get,
     read_object,
 )
-from ..processors.markdown import chunk_markdown
 from ..processors.pdf import normalize_pdf_text
+from ..processors.rag_documents import KnowledgeTextSplitter, excel_documents
 
 TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
 MEDIA_MODALITIES = {
@@ -89,7 +93,15 @@ def _extract_text(filename: str, content: bytes) -> str | None:
                 if isinstance(block, Table):
                     paragraphs.extend(" | ".join(cell.text for cell in row.cells) for row in block.rows)
                 elif block.text.strip():
-                    paragraphs.append(block.text)
+                    value = block.text.strip()
+                    import re
+                    style = block.style.name if block.style else ""
+                    match = re.search(r"(?:Heading|标题)\s*([1-6])", style, re.IGNORECASE)
+                    if match:
+                        value = "#" * int(match.group(1)) + " " + value
+                    elif len(value) < 80 and re.match(r"^[一二三四五六七八九十]+、[^。；！？]+[：:]?$", value):
+                        value = "## " + value
+                    paragraphs.append(value)
             return "\n\n".join(paragraphs).strip()
         except Exception as error:
             raise RuntimeError("Word 文本提取失败，请确认文件格式有效") from error
@@ -213,10 +225,19 @@ def _process_index(task):
         text = text.strip()
         if not text:
             raise RuntimeError("文档中没有可索引的文本")
-        chunks = chunk_markdown(text)
+        extension = PurePath(version.filename).suffix.lower()
+        if extension in {".xlsx", ".xls"}:
+            from ..processors.excel.workbook import parse_workbook
+            chunks = excel_documents(parse_workbook(version.filename, content), version_id=version.id)
+        else:
+            chunks = KnowledgeTextSplitter().create_documents([text], [{"version_id": str(version.id)}])
         version.status = "EMBEDDING"
         db.session.commit()
-        vectors, model = embed_texts([chunk.content for chunk in chunks])
+        embeddings = DashScopeEmbeddings(documents_fn=embed_texts)
+        with tracing_scope():
+            vectors = RunnableLambda(embeddings.embed_documents).invoke(
+                [chunk.page_content for chunk in chunks], config={"run_name": "index.embed_documents"})
+        model = embeddings.model
         if len(vectors) != len(chunks):
             raise EmbeddingError("Embedding 服务返回的向量数量与文档切片数量不一致")
         db.session.execute(db.delete(DocumentChunk).where(DocumentChunk.document_version_id == version.id))
@@ -226,17 +247,27 @@ def _process_index(task):
                     id=__import__("uuid").uuid4(),
                     document_version_id=version.id,
                     chunk_index=index,
-                    content=chunk.content,
-                    heading_path=chunk.heading_path,
-                    token_count=max(1, len(chunk.content) // 4),
+                    content=chunk.page_content,
+                    heading_path=chunk.metadata.get("heading_path"),
+                    token_count=max(1, len(chunk.page_content)),
                     embedding=vector,
-                    chunk_metadata={"line_start": chunk.line_start, "line_end": chunk.line_end},
+                    chunk_metadata={**chunk.metadata, "previous_index": index - 1 if index else None,
+                                    "next_index": index + 1 if index + 1 < len(chunks) else None},
                 )
             )
         version.chunk_count = len(chunks)
         version.embedding_model = model
         version.status = "INDEXED"
         version.error_message = None
+    if version.embedding_model:
+        profile = configured_profile(version.embedding_model, len(vectors[0]) if vectors else None)
+        extension = PurePath(version.filename).suffix.lower()
+        if _media_modality(version.filename):
+            profile.update(chunk_strategy="media-single-object", chunk_size=None, chunk_overlap=0)
+        elif extension in {".xlsx", ".xls"}:
+            profile.update(chunk_strategy="excel-row-with-header", chunk_size=None, chunk_overlap=0)
+        profile["source_extension"] = extension
+        version.index_profile, version.index_config_hash = profile, profile_hash(profile)
     document = db.session.get(Document, version.document_id)
     if document and document.status == "active":
         current = db.session.get(DocumentVersion, document.current_version_id) if document.current_version_id else None

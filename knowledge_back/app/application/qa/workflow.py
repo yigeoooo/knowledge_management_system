@@ -2,12 +2,19 @@
 
 from typing import Any, TypedDict
 
+from flask import current_app
+from langchain_core.documents import Document
 from langgraph.graph import END, START, StateGraph
 
 from ...core.extensions import db
+from ...integrations.ai.langchain_adapters import KnowledgeBaseRetriever, document_source
+from ...integrations.ai.langsmith_config import tracing_scope
+from ...integrations.ai.langsmith_reader import destination
 from ..conversations.memory import resolve_question
+from ..prompts.registry import prompt_fingerprint, prompt_metadata, with_prompts
 from .grounding_service import NO_EVIDENCE, ROBOT_NO_EVIDENCE, generate_answer
-from .retrieval_service import retrieve_for_answer
+from .observability import RunRecorder
+from .retrieval_service import AnswerMaterial, retrieve_for_answer
 
 
 class AnswerState(TypedDict, total=False):
@@ -18,6 +25,7 @@ class AnswerState(TypedDict, total=False):
     robot: bool
     resolved_question: str
     clarification: str | None
+    documents: list[Document]
     material: Any
     result: dict
 
@@ -29,14 +37,19 @@ def understand(state):
 def retrieve(state):
     from ...api.retrieval.controller import search_sources
 
-    material = retrieve_for_answer(
-        state["knowledge_base_id"],
-        state["resolved_question"],
-        anchor_id=state.get("anchor"),
-        search_sources_fn=search_sources,
+    retriever = KnowledgeBaseRetriever(
+        knowledge_base_id=state["knowledge_base_id"], anchor_id=state.get("anchor"),
+        material_fn=retrieve_for_answer, search_fn=search_sources,
+    )
+    documents = retriever.invoke(state["resolved_question"], config={"run_name": "knowledge_retriever"})
+    sources = [document_source(d) for d in documents]
+    material = AnswerMaterial(
+        [s for s in sources if s.get("modality", "text") == "text"],
+        [s for s in sources if s.get("modality") in {"image", "video"}],
+        retriever.scope, retriever.retrieval_count,
     )
     db.session.rollback()
-    return {"material": material}
+    return {"material": material, "documents": documents}
 
 
 def grounded_answer(state):
@@ -108,14 +121,47 @@ def build_workflow():
 workflow = build_workflow()
 
 
-def answer_question(question, base_id, context, anchor=None, *, robot=False):
-    return workflow.invoke(
-        {
-            "question": question,
-            "knowledge_base_id": base_id,
-            "context": context,
-            "anchor": anchor,
-            "robot": robot,
-        },
-        config={"recursion_limit": 8},
-    )["result"]
+@with_prompts
+def answer_question(
+    question,
+    base_id,
+    context,
+    anchor=None,
+    *,
+    robot=False,
+    trace_context=None,
+):
+    from uuid import uuid4
+    metadata = {key: str(value) for key, value in (trace_context or {}).items()
+                if value is not None and key in {"conversation_id", "turn_id", "knowledge_base_id", "evaluation_run_id", "evaluation_example_id", "evaluation_arm"}}
+    if metadata.get("conversation_id"):
+        metadata["session_id"] = metadata["conversation_id"]
+    metadata["prompt_versions"] = prompt_metadata()
+    run_id = uuid4()
+    recorder = RunRecorder()
+    def diagnostic(state=None):
+        material = (state or {}).get("material")
+        return {
+            "run_id": str(run_id), "pipeline_version": "rag-v2",
+            "prompt_version": prompt_fingerprint(), "prompts": prompt_metadata(), "steps": recorder.steps,
+            "token_usage": recorder.usage,
+            "destination": destination(current_app.config),
+                "content_captured": current_app.config.get("LANGSMITH_CAPTURE_CONTENT", False),
+            "retrieval": material.scope.get("retrieval", {}) if material else {},
+        }
+
+    try:
+        with tracing_scope():
+            state = workflow.invoke(
+                {"question": question, "knowledge_base_id": base_id, "context": context,
+                 "anchor": anchor, "robot": robot},
+                config={"recursion_limit": 16, "run_name": "rag.answer", "run_id": run_id,
+                        "tags": ["rag-v2", "robot" if robot else "web"], "metadata": metadata,
+                        "callbacks": [recorder]},
+            )
+    except Exception as error:
+        error.execution_trace = diagnostic()
+        raise
+    result = state["result"]
+    result["execution_trace"] = diagnostic(state)
+    return result

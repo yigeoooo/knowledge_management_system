@@ -155,6 +155,8 @@ def _version_data(version):
         "status": version.status,
         "chunk_count": version.chunk_count,
         "embedding_model": version.embedding_model,
+        "index_profile": version.index_profile,
+        "index_config_hash": version.index_config_hash,
         "error_message": version.error_message,
         "task": _task_data(latest_task) if latest_task else None,
         "created_by": str(version.created_by) if version.created_by else None,

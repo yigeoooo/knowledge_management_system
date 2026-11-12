@@ -13,12 +13,10 @@ from sqlalchemy.exc import IntegrityError
 from ...api.auth.controller import page_required
 from ...api.retrieval.controller import (
     require_knowledge_base,
-    search_sources,
     validate_question,
     with_preview_urls,
 )
-from ...application.qa.grounding_service import NO_EVIDENCE, generate_answer, generate_suggestions
-from ...application.qa.retrieval_service import retrieve_for_answer
+from ...application.qa.grounding_service import generate_suggestions
 from ...application.qa.search_service import available_chunks
 from ...core.extensions import db, limiter
 from ...core.http import ApiError, success
@@ -309,32 +307,10 @@ def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=No
     db.session.rollback()
     started = monotonic()
     try:
-        material = retrieve_for_answer(
-            base_id, question, anchor_id=anchor_id, search_sources_fn=search_sources
-        )
-        context, media = material.context, material.media
-        db.session.rollback()
-        answer, citations, model, status = NO_EVIDENCE, [], None, "NO_EVIDENCE"
-        if context:
-            answer, citations, model, status = generate_answer(
-                question, context, scope=material.scope
-            )
-        if not context and media:
-            answer = "找到了相关图片或视频，但目前没有足够的文字资料生成可靠回答，请查看相关来源。"
-        if (
-            robot_id is None
-            and status in {"SUCCESS", "PARTIAL"}
-            and material.scope.get("coverage") == "sampled_sections"
-        ):
-            covered = material.scope["covered_documents"]
-            total = material.scope.get("total_documents")
-            if total is not None:
-                answer += (
-                    f"\n\n本次概览参考了 {covered}/{total} 篇已索引文字资料的代表章节，未阅读全文。"
-                )
-            else:
-                answer += f"\n\n以上整理基于 {covered} 篇相关文档中检索到的章节。"
-        _verify_current(base_id, citations + media)
+        from ...application.qa.workflow import answer_question
+        result = answer_question(question, base_id, {}, anchor_id, robot=robot_id is not None,
+                                 trace_context={"turn_id": log_id, "knowledge_base_id": base_id})
+        _verify_current(base_id, result["sources"])
     except Exception as error:
         db.session.rollback()
         message = (
@@ -359,11 +335,7 @@ def _answer_question(request_id, base_id, question, *, user_id=None, robot_id=No
     _finish_request(
         log_id,
         lease,
-        status=status,
-        answer=answer,
-        sources=citations + media,
-        retrieval_count=material.retrieval_count,
-        model_name=model,
+        **result,
         error_message=None,
         latency_ms=int((monotonic() - started) * 1000),
     )

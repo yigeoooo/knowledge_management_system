@@ -13,6 +13,7 @@ from ...core.extensions import db
 from ...core.http import ApiError
 from ...entities import Document, DocumentChunk, DocumentVersion
 from ...integrations.ai.embedding_adapter import EmbeddingError
+from .reranker import rerank_sources
 from .search_service import available_chunks, source_from_row
 from .search_service import search_sources as default_search_sources
 
@@ -218,13 +219,17 @@ def _neighbours(base_id, seeds):
         .with_only_columns(
             DocumentChunk.document_version_id,
             DocumentChunk.chunk_index,
+            DocumentChunk.chunk_metadata["section_id"].as_string(),
         )
         .where(DocumentChunk.id.in_([UUID(s["chunk_id"]) for s in seeds]))
     ).all()
     conditions = [
         (DocumentChunk.document_version_id == version_id)
-        & DocumentChunk.chunk_index.between(index - 1, index + 1)
-        for version_id, index in selected
+        & (or_(DocumentChunk.chunk_index.between(index - 1, index + 1),
+               (DocumentChunk.chunk_metadata["section_id"].as_string() == section_id)
+               & DocumentChunk.chunk_index.between(index - 3, index + 3))
+           if section_id else DocumentChunk.chunk_index.between(index - 1, index + 1))
+        for version_id, index, section_id in selected
     ]
     rows = (
         _rows(
@@ -257,78 +262,133 @@ def _merge_ranked(vector, lexical):
 
 
 def _context(candidates):
-    chosen, ids, texts, budget = [], set(), set(), 24000
+    from langchain_core.messages.utils import count_tokens_approximately
+    chosen, ids, texts = [], set(), set()
+    budget = current_app.config.get("QA_CONTEXT_TOKEN_BUDGET", 12000)
     for source in candidates:
         if source["modality"] != "text" or not source["content"] or source["chunk_id"] in ids:
             continue
         content = source["content"].strip()
         key = re.sub(r"\s+", "", content)
-        if not key or key in texts or len(content) > budget:
+        cost = count_tokens_approximately([("human", content)], chars_per_token=1.0)
+        if not key or key in texts or cost > budget:
             continue
         # Indexed chunks already have a bound. Do not truncate a command/code block
         # again at an arbitrary 3,000-character boundary.
         ids.add(source["chunk_id"])
         texts.add(key)
-        budget -= len(content)
+        budget -= cost
         chosen.append({**source, "source_id": str(len(chosen) + 1), "content": content})
         if len(chosen) == 10:
             break
     return chosen
 
 
-def retrieve_for_answer(base_id, question, *, anchor_id=None, search_sources_fn=default_search_sources):
+def _recall(state):
+    base_id, question, anchor_id = state["base_id"], state["question"], state.get("anchor_id")
     mode, terms = question_mode(question), _terms(question)
     anchors = _anchor(base_id, anchor_id)
-    # Generic questions refer to the selected knowledge base in this single-turn UI.
-    global_overview = mode == "overview" and not terms and not anchors
     scope = {"mode": mode, "coverage": "retrieved_sections"}
-    if global_overview:
-        versions = (
-            _text_query(base_id)
-            .with_only_columns(
-                DocumentVersion.id.label("version_id"),
-                Document.title.label("title"),
-            )
-            .distinct()
-            .subquery()
-        )
+    if mode == "overview" and not terms and not anchors:
+        versions = (_text_query(base_id).with_only_columns(
+            DocumentVersion.id.label("version_id"), Document.title.label("title")
+        ).distinct().subquery())
         total = db.session.scalar(db.select(func.count()).select_from(versions))
-        entries = db.session.execute(
-            db.select(versions).order_by(versions.c.title, versions.c.version_id).limit(10)
-        ).all()
+        entries = db.session.execute(db.select(versions).order_by(
+            versions.c.title, versions.c.version_id).limit(10)).all()
         groups = [_sections(base_id, str(entry.version_id), limit=2) for entry in entries]
-        candidates = [group[index] for index in range(2) for group in groups if len(group) > index]
-        context = _context(candidates)
-        scope.update(
-            total_documents=total,
-            covered_documents=len({s["document_id"] for s in context}),
-            coverage="sampled_sections",
-            catalog=list(dict.fromkeys(source["document_title"] for source in context)),
-        )
-        return AnswerMaterial(context, [], scope, len(candidates))
-
+        candidates = [g[i] for i in range(2) for g in groups if len(g) > i]
+        scope.update(total_documents=total, coverage="sampled_sections")
+        return {"overview": True, "candidates": candidates, "scope": scope, "anchors": []}
     lexical = _lexical(base_id, terms)
-    db.session.rollback()  # Release the database connection while embedding the question.
+    db.session.rollback()
+    fallback = False
     try:
-        vector, _ = search_sources_fn(base_id, question, top_k=24)
+        vector, _ = state["search"](base_id, question, top_k=24)
     except EmbeddingError:
         if not lexical and not anchors:
             raise
-        logger.info("qa_retrieval_fallback method=lexical_or_recommendation")
-        vector = []
+        vector, fallback = [], True
     ranked = _merge_ranked(vector, lexical)
-    text_ranked = [source for source in ranked if source["modality"] == "text"]
-    seeds = list({source["chunk_id"]: source for source in anchors + text_ranked}.values())[:4]
-    neighbours = _neighbours(base_id, seeds)
-    if mode in {"overview", "workflow"}:
-        versions = list(dict.fromkeys(source["version_id"] for source in anchors + text_ranked))[:2]
-        groups = [_sections(base_id, version_id, limit=6) for version_id in versions]
-        sections = [group[index] for index in range(6) for group in groups if len(group) > index]
-        candidates = anchors + text_ranked[:2] + sections + neighbours + text_ranked[2:]
-        scope["coverage"] = "sampled_sections"
+    scope["retrieval"] = {"embedding_fallback": fallback,
+        "vector": [{"chunk_id": s["chunk_id"], "score": s.get("score")} for s in vector],
+        "lexical": [s["chunk_id"] for s in lexical]}
+    return {"overview": False, "candidates": ranked, "anchors": anchors, "scope": scope}
+
+
+def _rank(state):
+    if state["overview"]:
+        return {}
+    return {"candidates": rerank_sources(state["question"], state["candidates"],
+                enabled=current_app.config.get("QA_RERANK_ENABLED", False))}
+
+
+def _expand(state):
+    ranked, anchors, scope = state["candidates"], state["anchors"], dict(state["scope"])
+    base_id, mode = state["base_id"], scope["mode"]
+    media = []
+    if state["overview"]:
+        candidates = ranked
     else:
-        candidates = anchors + text_ranked[:4] + neighbours + text_ranked[4:]
+        text_ranked = [s for s in ranked if s["modality"] == "text"]
+        seeds = list({s["chunk_id"]: s for s in anchors + text_ranked}.values())[:4]
+        neighbours = _neighbours(base_id, seeds)
+        if mode in {"overview", "workflow"}:
+            versions = list(dict.fromkeys(s["version_id"] for s in anchors + text_ranked))[:2]
+            groups = [_sections(base_id, vid, limit=6) for vid in versions]
+            sections = [g[i] for i in range(6) for g in groups if len(g) > i]
+            candidates = anchors + text_ranked[:2] + sections + neighbours + text_ranked[2:]
+            scope["coverage"] = "sampled_sections"
+        else:
+            candidates = anchors + text_ranked[:4] + neighbours + text_ranked[4:]
+        media = [s for s in ranked if s["modality"] in {"image", "video"}][:3]
     context = _context(candidates)
-    media = [source for source in ranked if source["modality"] in {"image", "video"}][:3]
     scope["covered_documents"] = len({s["document_id"] for s in context})
-    return AnswerMaterial(context, media, scope, len({s["chunk_id"] for s in candidates + media}))
+    scope["catalog"] = list(dict.fromkeys(s["document_title"] for s in context))
+    scope.setdefault("retrieval", {})["ranked"] = [
+        {"chunk_id": s["chunk_id"], "score": s.get("score"), "rerank_score": s.get("rerank_score"), "document_title": s["document_title"],
+         "document_id": s["document_id"], "index_config_hash": s.get("index_config_hash"),
+         "rerank_fallback": s.get("rerank_fallback", False)}
+        for s in ranked]
+    scope["retrieval"]["selected"] = [s["chunk_id"] for s in context]
+    scope["retrieval"]["context_documents"] = [s["document_title"] for s in context]
+    scope["retrieval"]["context_document_ids"] = [s["document_id"] for s in context]
+    scope["retrieval"]["reranker"] = current_app.config.get("QA_RERANK_PROVIDER", "lexical") if current_app.config.get("QA_RERANK_ENABLED") else "disabled"
+    return {"result": AnswerMaterial(context, media, scope,
+                len({s["chunk_id"] for s in candidates + media}))}
+
+
+def _retrieval_graph():
+    from typing import Any, TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+    class State(TypedDict, total=False):
+        base_id: Any
+        question: str
+        anchor_id: str | None
+        search: Any
+        candidates: list
+        anchors: list
+        overview: bool
+        scope: dict
+        result: Any
+    graph = StateGraph(State)
+    graph.add_node("hybrid_recall", _recall)
+    graph.add_node("rerank", _rank)
+    graph.add_node("expand_context", _expand)
+    graph.add_edge(START, "hybrid_recall")
+    graph.add_edge("hybrid_recall", "rerank")
+    graph.add_edge("rerank", "expand_context")
+    graph.add_edge("expand_context", END)
+    return graph.compile(name="hybrid_retrieval")
+
+
+retrieval_graph = _retrieval_graph()
+
+
+def retrieve_for_answer(base_id, question, *, anchor_id=None, search_sources_fn=default_search_sources):
+    from ...integrations.ai.langsmith_config import tracing_scope
+    with tracing_scope():
+        return retrieval_graph.invoke({"base_id": base_id, "question": question,
+            "anchor_id": anchor_id, "search": search_sources_fn},
+            config={"run_name": "rag.retrieval", "recursion_limit": 8})["result"]

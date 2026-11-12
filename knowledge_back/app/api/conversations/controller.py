@@ -183,7 +183,7 @@ def web_detail(cid):
     return success(svc.conversation_data(svc.get_conversation(cid, user_id=g.user.id)))
 
 
-def turns(c, *, robot=False):
+def turns(c, *, robot=False, diagnostics=False):
     size = number("page_size", 30, 100)
     query = db.select(QALog).where(QALog.conversation_id == c.id)
     if request.args.get("before"):
@@ -192,7 +192,9 @@ def turns(c, *, robot=False):
     more, rows = len(rows) > size, rows[:size]
     return success(
         {
-            "items": [svc.turn_data(row, robot=robot) for row in reversed(rows)],
+            "items": [{**svc.turn_data(row, robot=robot),
+                       **({"has_execution_trace": bool(row.execution_trace)} if diagnostics else {})}
+                      for row in reversed(rows)],
             "next_before": rows[-1].turn_no if more else None,
             "conversation": svc.conversation_data(c),
         }
@@ -389,7 +391,7 @@ def admin_detail(cid):
 @conversations.get("/admin/qa-conversations/<uuid:cid>/turns")
 @page_required("/qa-logs")
 def admin_turns(cid):
-    return turns(svc.get_conversation(cid, admin=True))
+    return turns(svc.get_conversation(cid, admin=True), diagnostics=True)
 
 
 @conversations.get("/admin/qa-conversations/<uuid:cid>/export")
@@ -406,3 +408,19 @@ def admin_export(cid):
         conditional=False,
         etag=False,
     )
+
+
+@conversations.get("/admin/qa-conversations/<uuid:cid>/turns/<uuid:tid>/trace")
+@page_required("/qa-logs")
+@limiter.limit("30 per minute", key_func=lambda: str(g.user.id))
+def admin_turn_trace(cid, tid):
+    from ...application.qa.trace_details import get_trace_details
+
+    svc.get_conversation(cid, admin=True)
+    log = db.session.scalar(db.select(QALog).where(QALog.id == tid, QALog.conversation_id == cid))
+    if not log:
+        raise ApiError("问答不存在", 404)
+    # Detach before remote I/O to release the database transaction and connection.
+    db.session.expunge(log)
+    db.session.rollback()
+    return success(get_trace_details(log))

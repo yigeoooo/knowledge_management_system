@@ -5,6 +5,8 @@ import { Download } from '@element-plus/icons-vue'
 import { api } from '../lib/session'
 import { type Conversation, type ConversationPage, type Turn, type TurnPage } from '../lib/conversations'
 import ConversationTurns from '../components/ConversationTurns.vue'
+import TraceDetailsDialog from '../components/TraceDetailsDialog.vue'
+const traceTurn = ref<Turn | null>(null)
 
 interface Owner { id: string; name: string; identity: string; status: string; conversation_count: number; turn_count: number }
 const source = ref('WEB'), ownerSearch = ref(''), historySearch = ref(''), deleted = ref('')
@@ -15,7 +17,7 @@ const ownerLoading = ref(false), historyLoading = ref(false), detailLoading = re
 const page = ref(1), total = ref(0)
 const exporting = ref(false), exportController = new AbortController()
 let ownerGeneration = 0, historyGeneration = 0, detailGeneration = 0, disposed = false
-function clearDetails() { detailGeneration++; detail.value = null; turns.value = []; before.value = null; detailLoading.value = false }
+function clearDetails() { traceTurn.value = null; detailGeneration++; detail.value = null; turns.value = []; before.value = null; detailLoading.value = false }
 async function loadOwners() {
   const current = ++ownerGeneration
   owners.value = []; total.value = 0
@@ -96,10 +98,11 @@ onBeforeUnmount(() => { disposed = true; ownerGeneration++; historyGeneration++;
       <div v-loading="historyLoading" class="conversation-items"><button v-for="item in history" :key="item.id" :class="['audit-conversation', { selected: detail?.id === item.id }]" @click="selectConversation(item)"><strong>{{ item.title }}</strong><small>{{ item.knowledge_base_name }} · {{ item.turn_count }} 轮</small><small>{{ new Date(item.last_message_at).toLocaleString() }}</small><el-tag v-if="item.deleted_at" size="small" type="info">已删除</el-tag><el-tag v-else-if="item.closed_at" size="small" type="warning">已关闭 · 只读</el-tag></button><el-empty v-if="!history.length && !historyLoading" :description="selected ? '该对象暂无匹配会话' : '请先选择左侧用户或机器人'" :image-size="65" /><el-button v-if="cursor" text @click="loadHistory(true)">更多会话</el-button></div>
     </section>
     <section v-loading="detailLoading" class="detail-panel" aria-label="完整对话详情">
-      <template v-if="detail"><div class="detail-heading"><div class="detail-title"><h3>{{ detail.title }}</h3><el-button :icon="Download" :loading="exporting" :disabled="detailLoading" @click="exportConversation">导出会话（Word）</el-button></div><p>{{ detail.owner_name }} · {{ detail.knowledge_base_name }} · {{ detail.turn_count }} 轮</p><el-tag v-if="detail.deleted_at" type="info">已软删除 · 审计保留</el-tag><el-tag v-if="detail.closed_at" type="warning">会话已关闭</el-tag></div><el-button v-if="before" text @click="selectConversation(detail, true)">加载更早消息</el-button><ConversationTurns :turns="turns" readonly /></template>
+      <template v-if="detail"><div class="detail-heading"><div class="detail-title"><h3>{{ detail.title }}</h3><el-button :icon="Download" :loading="exporting" :disabled="detailLoading" @click="exportConversation">导出会话（Word）</el-button></div><p>{{ detail.owner_name }} · {{ detail.knowledge_base_name }} · {{ detail.turn_count }} 轮</p><el-tag v-if="detail.deleted_at" type="info">已软删除 · 审计保留</el-tag><el-tag v-if="detail.closed_at" type="warning">会话已关闭</el-tag></div><el-button v-if="before" text @click="selectConversation(detail, true)">加载更早消息</el-button><ConversationTurns :turns="turns" readonly show-trace @trace="traceTurn = $event" /></template>
       <el-empty v-else description="选择一个会话，查看连续问答" :image-size="90" />
     </section>
   </div>
+  <TraceDetailsDialog :turn="traceTurn" @close="traceTurn = null" />
 </template>
 
 <style scoped>

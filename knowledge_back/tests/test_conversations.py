@@ -29,7 +29,7 @@ def setup(app, client, monkeypatch):
         ids = {"base": str(base.id), "other": str(other.id), "robot": str(robot.id)}
     seen = []
 
-    def answer(question, base_id, context, anchor, *, robot=False):
+    def answer(question, base_id, context, anchor, *, robot=False, trace_context=None):
         seen.append((question, str(base_id), context))
         return {
             "status": "SUCCESS",
@@ -298,3 +298,28 @@ def test_suggested_question_validation_returns_client_error(client, setup):
         },
     )
     assert response.status_code == 422
+
+
+def test_turn_freezes_published_prompts_before_execution(app, client, setup, monkeypatch):
+    from app.application.prompts.registry import get_prompt
+    from app.entities import PromptTemplate, PromptVersion
+    initial = first(client, setup)
+    captured = []
+    def answer(*args, **kwargs):
+        captured.append(get_prompt('answer_web'))
+        # A release during the model call must not alter this execution scope.
+        with app.app_context():
+            template = db.session.get(PromptTemplate, 'answer_web')
+            db.session.add(PromptVersion(prompt_key='answer_web',version=2,content='下一轮使用的新提示词正文。',note='并发发布测试'))
+            template.active_version=2; template.generation+=1
+            db.session.commit()
+        assert get_prompt('answer_web') == captured[0]
+        return {'status':'SUCCESS','answer':'已回答','sources':[]}
+    monkeypatch.setattr(qa_worker, 'answer_question', answer)
+    assert qa_worker.process_one(app)
+    with app.app_context():
+        from uuid import UUID
+        log=db.session.get(QALog,UUID(initial['turn_id']))
+        assert log.prompt_snapshot['answer_web']['version']==1
+        assert log.prompt_snapshot['answer_web']['content']==captured[0]
+        assert get_prompt('answer_web')=='下一轮使用的新提示词正文。'

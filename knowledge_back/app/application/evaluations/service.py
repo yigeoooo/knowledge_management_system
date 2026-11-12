@@ -1,0 +1,190 @@
+"""Freeze experimental inputs and aggregate paired results without inventing labels."""
+
+import json
+from copy import deepcopy
+from hashlib import sha256
+from statistics import mean
+from uuid import UUID
+
+from flask import current_app
+
+from ...core.extensions import db
+from ...core.http import ApiError
+from ...entities import Document, DocumentVersion, EvaluationExample, KnowledgeBase, PromptVersion
+from ..prompts.registry import published_snapshot, version_data
+from .documents import document_reference
+
+CONFIG_KEYS = (
+    "DEEPSEEK_CHAT_MODEL",
+    "DEEPSEEK_BASE_URL",
+    "LANGCHAIN_CHAT_ENABLED",
+    "LANGCHAIN_STRUCTURED_OUTPUT",
+    "QA_MIN_SIMILARITY",
+    "QA_RERANK_ENABLED",
+    "QA_RERANK_PROVIDER",
+    "RERANK_MODEL",
+    "QA_CONTEXT_TOKEN_BUDGET",
+    "DASHSCOPE_EMBEDDING_MODEL",
+    "DASHSCOPE_EMBEDDING_DIMENSION",
+    "QA_RECENT_TURNS",
+    "QA_HISTORY_BUDGET",
+)
+
+
+def digest(value):
+    return sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+def environment(base_id):
+    rows = db.session.execute(
+        db.select(
+            DocumentVersion.id,
+            DocumentVersion.content_hash,
+            DocumentVersion.index_config_hash,
+            DocumentVersion.chunk_count,
+            DocumentVersion.updated_at,
+        )
+        .join(Document, Document.current_version_id == DocumentVersion.id)
+        .where(
+            Document.knowledge_base_id == base_id,
+            Document.status == "active",
+            DocumentVersion.status == "INDEXED",
+        )
+        .order_by(DocumentVersion.id)
+    ).all()
+    return {
+        "pipeline_version": "rag-v2-prompts-v2-document-ids",
+        "config": {key: current_app.config.get(key) for key in CONFIG_KEYS},
+        "index": [
+            {
+                "id": str(r.id),
+                "content_hash": r.content_hash,
+                "index_config_hash": r.index_config_hash,
+                "chunks": r.chunk_count,
+                "updated_at": r.updated_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+def freeze(dataset, overrides, reviewed_only):
+    base = db.session.get(KnowledgeBase, dataset.knowledge_base_id)
+    if not base or base.status != "active":
+        raise ApiError("评测知识库不存在或已停用", 409)
+    query = db.select(EvaluationExample).where(EvaluationExample.dataset_id == dataset.id)
+    if reviewed_only:
+        query = query.where(EvaluationExample.reviewed_by.is_not(None))
+    examples = db.session.scalars(
+        query.order_by(EvaluationExample.created_at, EvaluationExample.id).limit(101)
+    ).all()
+    if not examples:
+        raise ApiError("没有可用样本，请先保存并启用测试题，或选择包含草稿试测", 422)
+    if len(examples) > 100:
+        raise ApiError("单次实验最多 100 个样本，请将暂不参与评测的题目保存为草稿，并仅使用已启用题目", 422)
+    baseline = published_snapshot()
+    candidate = deepcopy(baseline)
+    if not isinstance(overrides, dict) or len(overrides) > len(baseline):
+        raise ApiError("候选提示词格式不正确", 422)
+    for key, value in overrides.items():
+        try:
+            version = db.session.get(PromptVersion, UUID(str(value)))
+        except (ValueError, TypeError):
+            raise ApiError("候选版本 ID 不正确", 422) from None
+        if key not in baseline or not version or version.prompt_key != key:
+            raise ApiError("候选版本与提示词用途不匹配", 422)
+        candidate[key] = version_data(version)
+    covered = set()
+    for example in examples:
+        inputs = example.inputs
+        task = inputs.get("task", "answer")
+        if task == "summary":
+            covered.add("summarize")
+        elif task == "suggestions":
+            covered.update(("suggest_questions", "review_suggestions"))
+        else:
+            covered.update(("answer_robot" if inputs.get("robot") else "answer_web", "review_answer"))
+            context = inputs.get("context") or {}
+            if context.get("turns") or context.get("summary"):
+                covered.add("resolve_robot" if inputs.get("robot") else "resolve_web")
+    unused = [key for key in overrides if key not in covered and candidate[key] != baseline[key]]
+    if unused:
+        raise ApiError("测试集未覆盖候选用途：" + "、".join(unused) + "；请添加对应渠道的问答、历史追问、摘要或推荐问题样本", 422)
+    frozen = [
+        {
+            "id": str(e.id),
+            "name": e.name,
+            "revision": e.revision,
+            "inputs": {**e.inputs, "knowledge_base_code": base.code},
+            "reference": document_reference(e.reference, base.id),
+            "reviewed_by": str(e.reviewed_by) if e.reviewed_by else None,
+            "reviewed_at": e.reviewed_at.isoformat() if e.reviewed_at else None,
+        }
+        for e in examples
+    ]
+    env = environment(base.id)
+    if not env["index"]:
+        raise ApiError("知识库还没有完成索引的文档", 409)
+    return {
+        "dataset_id": str(dataset.id),
+        "dataset_name": dataset.name,
+        "knowledge_base_id": str(base.id),
+        "knowledge_base_code": base.code,
+        "examples": frozen,
+        "dataset_hash": digest(frozen),
+        "reviewed_only": reviewed_only,
+        "covered_prompt_keys": sorted(covered),
+        "baseline": baseline,
+        "candidate": candidate,
+        "environment": env,
+        "environment_hash": digest(env),
+    }
+
+
+def aggregate(results):
+    arms = {}
+    for arm in ("baseline", "candidate"):
+        rows = [r[arm] for r in results if arm in r]
+        keys = {k for r in rows for k in r.get("scores", {})}
+        arms[arm] = {
+            "count": len(rows),
+            "failures": sum(bool(r.get("error")) for r in rows),
+            "metrics": {
+                k: {
+                    "value": mean(r["scores"][k] for r in rows if k in r.get("scores", {})),
+                    "count": sum(k in r.get("scores", {}) for r in rows),
+                }
+                for k in keys
+            },
+        }
+    pairs = [
+        r
+        for r in results
+        if all(a in r and not r[a].get("error") for a in ("baseline", "candidate"))
+    ]
+    keys = {
+        k
+        for r in pairs
+        for k in r["baseline"].get("scores", {})
+        if k in r["candidate"].get("scores", {})
+    }
+    delta = {
+        k: mean(
+            r["candidate"]["scores"][k] - r["baseline"]["scores"][k]
+            for r in pairs
+            if k in r["candidate"]["scores"] and k in r["baseline"]["scores"]
+        )
+        for k in keys
+    }
+    reviews = [r["review"] for r in results if r.get("review")]
+    return {
+        **arms,
+        "paired_count": len(pairs),
+        "delta": delta,
+        "human_reviewed_count": len(reviews),
+        "human": {
+            a: mean(r[a] for r in reviews) if reviews else None for a in ("baseline", "candidate")
+        },
+    }

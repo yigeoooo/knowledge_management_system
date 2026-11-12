@@ -311,7 +311,7 @@ uv run flask --app app db upgrade
 
 升级后重启后端；前端重新安装锁定依赖并构建。迁移会将可确认归属的旧问答保留为单轮会话。历史机器人会话关闭，存量机器人需要在机器人管理中选择知识库后才可发起新问答。本次开发环境的旧问答清理及 `yibin` 绑定已单独完成，不包含在通用迁移中。
 
-最新迁移 `9b4f62a710cd` 新增“机器人问答”菜单（`/robot-qa`），默认授权超级管理员，普通用户不可见。已有安装执行上述 `db upgrade` 即可注册页面；升级后刷新页面或重新登录，重新获取菜单权限。此页面沿用知识问答布局，可选择机器人、查看绑定知识库、开启或继续对话、重试和软删除历史；测试记录保存到对应机器人的问答日志中。机器人答案使用简洁纯文本提示词。
+迁移 `9b4f62a710cd` 新增“机器人问答”菜单（`/robot-qa`），默认授权超级管理员，普通用户不可见。已有安装执行上述 `db upgrade` 即可注册页面；升级后刷新页面或重新登录，重新获取菜单权限。此页面沿用知识问答布局，可选择机器人、查看绑定知识库、开启或继续对话、重试和软删除历史；测试记录保存到对应机器人的问答日志中。机器人答案使用简洁纯文本提示词。
 
 本地默认 `QA_WORKER_AUTOSTART=true`，提交问题或查看历史后启动后台消费。网页问题入库后立即返回，页面轮询最终答案。机器人首问、追问和重试均在原 HTTP 请求内等待最终结果，默认最长 180 秒（`ROBOT_ANSWER_WAIT_SECONDS`）；客户端读取超时及反向代理、应用服务超时应覆盖该等待时长，建议至少 210 秒。机器人任务会主动提交给执行器，不依赖 `QA_WORKER_AUTOSTART` 开关。生产部署建议设为 `false`，并由进程管理器独立运行：
 
@@ -337,3 +337,9 @@ docker start kbs-postgres kbs-minio
 ```
 
 删除 kbs_postgres_data 或 .runtime/minio-data 会清除对应数据，确认不再需要数据后再删除。
+
+最新迁移为 `b84d01e7f230`，新增 RAG 执行追踪和索引配置元数据。已有环境也需执行 `db upgrade` 并重启后端和独立 Worker。新增配置与问答日志流程详情见 [RAG 架构与运行](knowledge_back/docs/rag-architecture.md)。
+
+### 提示词与评测升级
+
+根目录 `init.sql` 已包含提示词和评测表（版本 `c92ea640d815`）。旧部署执行 `cd knowledge_back` 后运行 `uv run flask --app app db upgrade`，然后重启后端与 Worker。生产环境运行 `uv run flask --app app evaluation-worker` 常驻进程，可设置 `EVALUATION_WORKER_AUTOSTART=false` 关闭 Web 进程内调度。使用方法见 [提示词与质量评测](knowledge_back/docs/prompt-evaluation-guide.md)。

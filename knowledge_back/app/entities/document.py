@@ -32,6 +32,8 @@ class DocumentVersion(Record, db.Model):
     status = db.Column(db.String(30), nullable=False, default="UPLOADED")
     chunk_count = db.Column(db.Integer, nullable=False, default=0)
     embedding_model = db.Column(db.String(200))
+    index_profile = db.Column(db.JSON)
+    index_config_hash = db.Column(db.String(64))
     error_message = db.Column(db.Text)
     created_by = db.Column(db.Uuid, db.ForeignKey("users.id"))
     __table_args__ = (db.UniqueConstraint("document_id", "version_no"),)

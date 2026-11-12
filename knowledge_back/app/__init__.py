@@ -8,11 +8,14 @@ from werkzeug.exceptions import HTTPException
 from .core.config import ROOT, configuration
 from .core.extensions import db, limiter, migrate
 from .core.http import ApiError, success
+from .integrations.ai.langsmith_config import configure_langsmith
 
 
 def create_app(overrides=None):
     app = Flask(__name__)
     app.config.update(configuration(overrides or {}))
+    app.extensions["langsmith"] = configure_langsmith(app.config)
+    app.config["LANGSMITH_CONFIGURED"] = app.extensions["langsmith"] is not None
     db.init_app(app)
     migrate.init_app(app, db, directory=str(ROOT / "migrations"))
     limiter.init_app(app)

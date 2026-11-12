@@ -16,6 +16,8 @@ const components: Record<string, NonNullable<RouteRecordRaw['component']>> = {
   RoleManagement: () => import('./views/RoleManagementView.vue'),
   PageManagement: () => import('./views/ManagementView.vue'),
   RolePermissions: () => import('./views/PermissionsView.vue'),
+  PromptManagement: () => import('./views/PromptManagementView.vue'),
+  EvaluationManagement: () => import('./views/EvaluationManagementView.vue'),
   QALogs: () => import('./views/ConversationHistoryView.vue'),
   AuditLogs: () => import('./views/ManagementView.vue'),
 }

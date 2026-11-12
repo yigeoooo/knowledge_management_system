@@ -147,7 +147,7 @@ def test_super_admin_bypasses_page_grants_and_receives_all_active_routes(app, cl
     data = response.get_json()["data"]
     assert "/create-document" in {page["route_path"] for page in data["pages"]}
     assert "/robot-qa" in {page["route_path"] for page in data["pages"]}
-    assert len(data["pages"]) == 14
+    assert len(data["pages"]) == 16
     headers = {"Authorization": f"Bearer {data['access_token']}"}
     assert client.get("/api/v1/users", headers=headers).status_code == 200
     assert (

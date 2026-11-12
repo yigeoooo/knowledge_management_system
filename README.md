@@ -17,6 +17,7 @@ Vue 3 + Element Plus 前端和 Flask 后端组成的知识库管理系统，支�
 ```bash
 cd knowledge_back
 uv sync --locked
+uv run flask --app app db upgrade
 uv run flask --app app run --host 127.0.0.1 --port 5000
 ```
 
@@ -37,3 +38,9 @@ npm run dev -- --host 0.0.0.0
 浏览器访问：<http://127.0.0.1:5173/>
 
 前端通过 Vite 将 `/api` 请求代理到本地 Flask 服务，因此前后端都按上面的默认端口启动即可。
+
+RAG v2 使用 LangChain 文档与检索接口、结构化模型输出和 LangGraph 多阶段流程。问答日志可逐轮查看 LangSmith 处理流程，采用居中详情弹窗，支持本地诊断回退。配置、记忆边界、索引升级和评测命令见 [RAG 架构与运行](knowledge_back/docs/rag-architecture.md)。
+
+### 提示词与质量评测
+
+管理员新增“提示词管理”和“质量评测”页面，支持数据库版本管理、草稿试测、人工标注、同题对比和发布回退。详见 [操作说明](knowledge_back/docs/prompt-evaluation-guide.md)。升级执行 `uv run flask --app app db upgrade` 并重启后端；生产环境增加 `uv run flask --app app evaluation-worker`。

@@ -9,6 +9,7 @@ import math
 from ...core.extensions import db
 from ...entities import Document, DocumentChunk, DocumentVersion
 from ...integrations.ai.embedding_adapter import embed_query as default_embed_query
+from ...integrations.ai.langchain_adapters import DashScopeEmbeddings
 from ...processors.pdf import readable_source
 
 
@@ -53,6 +54,8 @@ def source_from_row(chunk, version, document, score=None):
         "version_id": str(version.id),
         "version_no": version.version_no,
         "filename": version.filename,
+        "index_config_hash": version.index_config_hash,
+        "section_id": metadata.get("section_id"),
         "modality": modality,
         "score": round(max(-1.0, min(1.0, score)), 6) if score is not None else None,
         "heading_path": chunk.heading_path,
@@ -64,7 +67,9 @@ def source_from_row(chunk, version, document, score=None):
 def search_sources(knowledge_base_id, question, *, top_k=15, embedder=default_embed_query):
     """Search indexed chunks using the supplied embedding adapter."""
 
-    query_vector, model = embedder(question)
+    embeddings = DashScopeEmbeddings(query_fn=embedder)
+    query_vector = embeddings.embed_query(question)
+    model = embeddings.model
     query = available_chunks(knowledge_base_id, model)
     if db.engine.dialect.name == "postgresql":
         distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")

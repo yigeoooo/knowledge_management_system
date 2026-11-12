@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..application.conversations.memory import prepare_context
 from ..application.conversations.service import lock_robot, user_ready, writable
+from ..application.prompts.registry import prompt_scope, published_snapshot
 from ..application.qa.workflow import answer_question
 from ..core.extensions import db
 from ..core.http import ApiError
@@ -98,6 +99,14 @@ def claim(turn_id=None):
             log.lease_token, log.lease_expires_at = None, None
             db.session.commit()
             continue
+        if log.prompt_snapshot is None:
+            try:
+                log.prompt_snapshot = published_snapshot()
+            except RuntimeError:
+                log.status, log.error_message = "FAILED", "提示词配置缺失，请联系管理员升级数据库"
+                log.lease_token, log.lease_expires_at = None, None
+                db.session.commit()
+                continue
         token = uuid4()
         log.status, log.lease_token = "PROCESSING", token
         log.lease_expires_at = now() + timedelta(seconds=current_app.config["QA_LEASE_SECONDS"])
@@ -178,25 +187,54 @@ def process_one(app, turn_id=None):
                 log.knowledge_base_id,
                 log.suggestion_anchor,
             )
+            request_id = log.request_id
             snapshot = log.context_snapshot
+            prompts = log.prompt_snapshot
             robot = log.source_type == "ROBOT"
             db.session.rollback()
-            if snapshot is None:
-                snapshot = prepare_context(cid, number, turn_id=tid, lease_token=token)
-                saved = db.session.execute(
-                    db.update(QALog)
-                    .where(
-                        QALog.id == tid,
-                        QALog.lease_token == token,
-                        QALog.status == "PROCESSING",
-                        QALog.lease_expires_at > now(),
+            from langchain_core.runnables import RunnableLambda
+
+            from ..application.qa.observability import record_turn
+
+            def execute(_):
+                nonlocal snapshot
+                if snapshot is None:
+                    snapshot = RunnableLambda(lambda _: prepare_context(
+                        cid, number, turn_id=tid, lease_token=token)).invoke(
+                            {}, config={"run_name": "prepare_memory"})
+                    saved = db.session.execute(
+                        db.update(QALog)
+                        .where(
+                            QALog.id == tid,
+                            QALog.lease_token == token,
+                            QALog.status == "PROCESSING",
+                            QALog.lease_expires_at > now(),
+                        )
+                        .values(context_snapshot=snapshot)
                     )
-                    .values(context_snapshot=snapshot)
+                    db.session.commit()
+                    if saved.rowcount != 1:
+                        return None
+                return answer_question(
+                    question,
+                    base_id,
+                    snapshot,
+                    anchor,
+                    robot=robot,
+                    trace_context={
+                        "conversation_id": cid,
+                        "turn_id": tid,
+                        "knowledge_base_id": base_id,
+                        "request_id": request_id,
+                    },
                 )
-                db.session.commit()
-                if saved.rowcount != 1:
-                    return True
-            values = answer_question(question, base_id, snapshot, anchor, robot=robot)
+
+            with prompt_scope(prompts):
+                values = record_turn(execute, metadata={
+                    "conversation_id": cid, "turn_id": tid, "knowledge_base_id": base_id,
+                }, robot=robot)
+            if values is None:
+                return True
             values["latency_ms"] = int((monotonic() - started) * 1000)
             finish(tid, token, values)
         except Exception as error:  # noqa: BLE001 - isolate failed jobs without leaking provider data
@@ -217,6 +255,7 @@ def process_one(app, turn_id=None):
                 {
                     "status": "FAILED",
                     "error_message": message,
+                    "execution_trace": getattr(error, "execution_trace", None),
                     "latency_ms": int((monotonic() - started) * 1000),
                 },
             )

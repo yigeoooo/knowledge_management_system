@@ -36,6 +36,8 @@ const icons: Record<string, unknown> = {
   roles: Setting,
   pages: List,
   role_permissions: Lock,
+  prompts: Setting,
+  evaluations: DataAnalysis,
   qa_logs: DataAnalysis,
   audit_logs: Document,
   profile: User,

@@ -28,6 +28,8 @@ class QALog(Record, db.Model):
     resolved_question = db.Column(db.Text)
     answer_kind = db.Column(db.String(30), nullable=False, default="knowledge", server_default="knowledge")
     context_snapshot = db.Column(db.JSON)
+    prompt_snapshot = db.Column(db.JSON)
+    execution_trace = db.Column(db.JSON)
     lease_token = db.Column(db.Uuid)
     lease_expires_at = db.Column(db.DateTime(timezone=True))
     attempts = db.Column(db.Integer, nullable=False, default=0, server_default="0")

@@ -97,35 +97,87 @@ def _complete_json_http(
         raise ChatFormatError("问答模型返回格式不正确") from None
 
 
-def complete_json(instruction, material, *, max_tokens=2048, timeout_seconds=None):
-    """Keep provider details and framework messages behind the existing interface."""
-    if not current_app.config.get("LANGCHAIN_CHAT_ENABLED", False):
-        return _complete_json_http(instruction, material, max_tokens=max_tokens, timeout_seconds=timeout_seconds)
+def complete_json(instruction, material, *, max_tokens=2048, timeout_seconds=None, schema=None):
+    """One bounded provider request; parsing failures never silently call a model twice."""
+    from pydantic import ValidationError
+
+    from .langsmith_config import tracing_scope
+
+    with tracing_scope():
+        if not current_app.config.get("LANGCHAIN_CHAT_ENABLED", False):
+            payload, model = _complete_json_http(
+                instruction, material, max_tokens=max_tokens, timeout_seconds=timeout_seconds
+            )
+            try:
+                if schema:
+                    payload = schema.model_validate(payload).model_dump()
+            except ValidationError:
+                raise ChatFormatError("问答模型返回格式不正确") from None
+            return payload, model
+        return _complete_langchain(
+            instruction, material, max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds, schema=schema,
+        )
+
+
+def _complete_langchain(instruction, material, *, max_tokens, timeout_seconds, schema):
+    from langchain_core.exceptions import OutputParserException
+    from langchain_core.prompts import ChatPromptTemplate
     from langchain_deepseek import ChatDeepSeek
     from openai import APIError, APITimeoutError
+    from pydantic import ValidationError
 
     config = current_app.config
     base = config["DEEPSEEK_BASE_URL"].strip().rstrip("/")
     key, model = config["DEEPSEEK_API_KEY"].strip(), config["DEEPSEEK_CHAT_MODEL"].strip()
-    if urlparse(base).scheme not in {"http", "https"} or not urlparse(base).netloc or not model or key in {"", "replace-me", "replace-with-secret"}:
+    if (urlparse(base).scheme not in {"http", "https"} or not urlparse(base).netloc
+            or not model or key in {"", "replace-me", "replace-with-secret"}):
         raise ChatError("DeepSeek 问答服务未配置，请联系管理员")
-    timeout = min(90, max(5, config["DEEPSEEK_TIMEOUT_SECONDS"]), timeout_seconds or 90)
-    if timeout < 1:
-        raise ChatError("问答处理超时，请稍后重试")
+    timeout = min(90, max(5, config["DEEPSEEK_TIMEOUT_SECONDS"]))
+    if timeout_seconds is not None:
+        if timeout_seconds < 1:
+            raise ChatError("问答处理超时，请稍后重试")
+        timeout = min(timeout, timeout_seconds)
+    if schema:
+        instruction += "\nJSON schema: " + json.dumps(schema.model_json_schema(), ensure_ascii=False)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "{instruction}"), ("human", "{material}"),
+    ])
     try:
         client = ChatDeepSeek(model=model, api_key=key, api_base=base,
                               timeout=timeout, max_retries=0, temperature=0.1, max_tokens=max_tokens)
-        result = client.bind(response_format={"type": "json_object"}).invoke([
-            ("system", instruction), ("human", json.dumps(material, ensure_ascii=False)),
-        ], config={"callbacks": []})
-        if result.response_metadata.get("finish_reason") != "stop":
+        if config.get("LANGCHAIN_STRUCTURED_OUTPUT", True):
+            model_call = client.with_structured_output(
+                schema, method="json_mode", include_raw=True,
+            )
+            output = (prompt | model_call).invoke(
+                {"instruction": instruction, "material": json.dumps(material, ensure_ascii=False)},
+                config={"run_name": "structured." + (schema.__name__ if schema else "json")},
+            )
+            raw = output["raw"]
+            if output.get("parsing_error") is not None:
+                raise ChatFormatError("问答模型返回格式不正确")
+            payload = output["parsed"]
+            if schema:
+                payload = schema.model_validate(payload).model_dump()
+        else:
+            raw = (prompt | client.bind(response_format={"type": "json_object"})).invoke(
+                {"instruction": instruction, "material": json.dumps(material, ensure_ascii=False)},
+                config={"run_name": "json_completion"},
+            )
+            payload = _json_object(raw.content)
+            if schema:
+                payload = schema.model_validate(payload).model_dump()
+        if raw.response_metadata.get("finish_reason") != "stop":
             raise ChatFormatError("问答模型未完整生成结果")
-        if len(str(result.content)) > 1_048_576:
+        if len(str(raw.content).encode("utf-8")) > 1_048_576:
             raise ChatFormatError("问答模型返回的内容过长")
-        return _json_object(result.content), model
+        if not isinstance(payload, dict):
+            raise ChatFormatError("问答模型返回格式不正确")
+        return payload, model
     except APITimeoutError:
         raise ChatError("问答模型连接超时，请稍后重试") from None
     except APIError:
         raise ChatError("问答模型服务暂不可用，请稍后重试") from None
-    except (ValueError, KeyError, TypeError):
+    except (ValidationError, OutputParserException, ValueError, KeyError, TypeError):
         raise ChatFormatError("问答模型返回格式不正确") from None

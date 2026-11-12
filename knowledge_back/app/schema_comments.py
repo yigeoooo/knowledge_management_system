@@ -155,6 +155,9 @@ SCHEMA = {
 }
 
 
+SCHEMA["document_versions"][1].update({"index_profile": "实际索引配置快照；旧索引为空。", "index_config_hash": "索引配置的 SHA256 摘要。"})
+SCHEMA["qa_logs"][1]["execution_trace"] = "RAG 运行版本、阶段耗时、召回分数及 token 用量。"
+
 SCHEMA["robots"][1].update({
     "knowledge_base_id": "当前绑定知识库；存量未配置机器人为空且不可问答。",
     "binding_version": "每次换绑递增，旧会话不能跨绑定版本继续。",
@@ -187,6 +190,21 @@ SCHEMA["qa_conversations"] = ("独立会话：用户或机器人归属，单会�
     "summary_through_turn_no": "摘要覆盖截止轮次。",
     "memory_version": "摘要写入版本。",
 })
+
+
+SCHEMA['qa_logs'][1]['prompt_snapshot'] = '本轮使用的不可变提示词版本与正文快照，重试复用。'
+SCHEMA['prompt_templates'] = ('提示词用途与当前发布版本。', {
+    'key': '稳定用途键。', 'name': '展示名称。', 'active_version': '当前已发布版本号。', 'generation': '发布代数，用于并发检查。'})
+SCHEMA['prompt_versions'] = ('不可变提示词版本；保存草稿产生新版本。', {
+    'prompt_key': '所属提示词用途。', 'version': '用途内递增版本号。', 'content': '系统提示词正文。', 'note': '修改说明。'})
+SCHEMA['evaluation_datasets'] = ('每个知识库唯一的评测集。', {'name': '评测集名称。', 'knowledge_base_id': '评测知识库，每个知识库最多一个评测集。'})
+SCHEMA['evaluation_examples'] = ('评测题目及参考标注；保存时选择草稿或启用，修改递增修订号。', {
+    'dataset_id': '所属评测集。', 'name': '集内唯一名称。', 'inputs': '问题、历史语境与机器人标志。', 'reference': '预期文档 ID 与标题快照、答案要点与状态。',
+    'revision': '内容修订号。', 'reviewed_by': '题目启用确认人；为空时为草稿。', 'reviewed_at': '题目启用确认时间。'})
+SCHEMA['evaluation_runs'] = ('固定输入及提示词快照的成对评测任务。', {
+    'dataset_id': '来源评测集。', 'name': '实验名称。', 'status': 'PENDING、RUNNING、COMPLETED 或 FAILED。',
+    'snapshot': '测试题、提示词、索引和运行配置快照。', 'results': '逐题基线与候选答案、指标和人工评分。',
+    'lease_token': '任务执行令牌。', 'lease_expires_at': '租约到期时间。', 'attempts': '执行尝试次数。'})
 
 
 def describe_schema(metadata):

@@ -36,6 +36,7 @@ def pg_app():
     app = create_app(
         {
             "TESTING": True,
+            "LANGSMITH_TRACING": False,
             "SQLALCHEMY_DATABASE_URI": url,
             "SQLALCHEMY_ENGINE_OPTIONS": {
                 "connect_args": {"options": f"-c search_path={schema},public"}
@@ -49,7 +50,11 @@ def pg_app():
         with app.app_context():
             # Explicit schema check prevents accidental use of the business schema.
             assert db.session.scalar(text("SELECT current_schema()")) == schema
-            db.metadata.create_all(db.engine, checkfirst=False)
+            from pathlib import Path
+            db.session.rollback()
+            with db.engine.connect() as connection:
+                connection.exec_driver_sql((Path(__file__).parents[2] / 'init.sql').read_text())
+                connection.commit()
             a, b = KnowledgeBase(code="a", name="A"), KnowledgeBase(code="b", name="B")
             db.session.add_all([a, b])
             db.session.flush()

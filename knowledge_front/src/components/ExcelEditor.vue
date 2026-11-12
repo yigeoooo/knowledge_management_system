@@ -38,10 +38,11 @@ const props = withDefaults(
     workbook: ExcelWorkbook;
     title?: string;
     readonly?: boolean;
+    compact?: boolean;
     disabled?: boolean;
     saveDocument?: () => Promise<boolean>;
   }>(),
-  { title: "Excel 表格", readonly: false, disabled: false }
+  { title: "Excel 表格", readonly: false, disabled: false, compact: false }
 );
 const emit = defineEmits<{ change: [workbook: ExcelWorkbook] }>();
 const container = ref<HTMLElement | null>(null);
@@ -360,9 +361,9 @@ function initialize() {
     presets: [
       UniverSheetsCorePreset({
         container: containerId,
-        header: true,
-        toolbar: true,
-        contextMenu: true,
+        header: !props.compact,
+        toolbar: !props.compact,
+        contextMenu: !props.compact,
         footer: {},
       }),
     ],
