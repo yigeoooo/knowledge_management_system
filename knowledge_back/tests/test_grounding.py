@@ -166,7 +166,7 @@ def test_robot_rewrites_rich_or_long_draft_then_reviews_the_short_answer(
             assert material["draft"][0]["text"] == expected
             assert material["draft"][0]["evidence"][0]["text"] == context[0]["content"]
             return review_all(material)
-        assert prompt == grounding.ROBOT_ANSWER_PROMPT
+        assert prompt.endswith(grounding.ROBOT_ANSWER_PROMPT) and "小维" in prompt
         text = draft if len(materials) == 1 else expected
         if len(materials) > 1:
             assert material["correction"]

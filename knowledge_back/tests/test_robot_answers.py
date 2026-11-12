@@ -8,6 +8,7 @@ import test_qa as qa_tests
 
 from app.answer_text import answer_text
 from app.application.conversations import memory
+from app.application.prompts.registry import bootstrap_content
 from app.chat import ChatError
 from app.extensions import db
 from app.models import QALog, Robot
@@ -133,7 +134,7 @@ def test_robot_json_answer_and_retry_omit_citations(
     assert prompts == [
         qa_tests.grounding_module.ANSWER_PROMPT,
         qa_tests.grounding_module.ANSWER_PROMPT,
-        qa_tests.grounding_module.ROBOT_ANSWER_PROMPT,
+        bootstrap_content("robot_persona") + "\n\n" + qa_tests.grounding_module.ROBOT_ANSWER_PROMPT,
     ]
     calls = qa_setup["completion"].call_count
     replay = client.post("/api/v1/robot/query", json=robot_request)
@@ -154,7 +155,7 @@ def test_robot_followup_and_failed_retry_use_plain_answer_with_context(
     def completion(prompt, material, **options):
         if "draft" in material:
             return qa_tests.grounded_answer(prompt, material, **options)
-        assert prompt == qa_tests.grounding_module.ROBOT_ANSWER_PROMPT
+        assert prompt.endswith(qa_tests.grounding_module.ROBOT_ANSWER_PROMPT) and "小维" in prompt
         question = material["question"]
         if isinstance(question, dict):
             assert question["resolved_question"] == "安装设备后何时可以操作？"
@@ -213,8 +214,8 @@ def test_robot_followup_and_failed_retry_use_plain_answer_with_context(
 @pytest.mark.parametrize(
     ("status", "answer"),
     [
-        ("NO_EVIDENCE", "当前资料不足，暂时无法回答。"),
-        ("SOURCES_ONLY", "暂时无法整理出可靠回答，请换个问法。"),
+        ("NO_EVIDENCE", "这个问题小维还没有找到可靠资料，暂时不能确定。"),
+        ("SOURCES_ONLY", "小维暂时没能整理出可靠的回答，你可以换个问法再试试。"),
     ],
 )
 def test_robot_without_answer_does_not_refer_to_missing_sources(

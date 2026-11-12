@@ -6,6 +6,8 @@ Vue 3 + Element Plus 前端和 Flask 后端组成的知识库管理系统，支�
 
 管理员可在“机器人问答”（`/robot-qa`）选择机器人，直接测试首问、连续追问、新对话和历史会话。页面调用实际机器人接口，答案为简洁的单段纯文本，测试记录归属所选机器人，可在问答日志中查看。
 
+机器人自称“小维”，支持问候、闲聊和通识交流，业务问题继续查询绑定知识库；实时天气尚未接入。身份与分流提示词可在后台管理，参见 [自然交流与评测说明](knowledge_back/docs/robot-natural-conversation.md)。
+
 ## 安装依赖和初始化
 
 首次使用请按 [install.md](./install.md) 完成 PostgreSQL、pgvector、MinIO、后端环境变量和项目依赖配置。

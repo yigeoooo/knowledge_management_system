@@ -1,4 +1,6 @@
 """Provider-independent contracts for model output; evidence is verified separately."""
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -46,3 +48,9 @@ class Summary(Contract):
 class ResolvedQuestion(Contract):
     resolved_question: str = Field(min_length=1, max_length=4000)
     clarification: str | None = None
+
+
+class RobotInteraction(Contract):
+    kind: Literal["knowledge", "chat", "general", "realtime", "clarification"]
+    answer: str | None = Field(default=None, max_length=300)
+    realtime_topic: Literal["weather", "other"] | None = None

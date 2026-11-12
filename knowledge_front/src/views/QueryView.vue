@@ -7,6 +7,7 @@ import { api } from '../lib/session'
 import { type Conversation, type ConversationPage } from '../lib/conversations'
 import { useConversation } from '../lib/useConversation'
 import ConversationTurns from '../components/ConversationTurns.vue'
+import ConversationLengthNotice from '../components/ConversationLengthNotice.vue'
 
 const route = useRoute(), router = useRouter()
 const { conversation, turns, loading, sending, error, nextBefore, busy, reset, open, older, send, retry } = useConversation()
@@ -143,6 +144,7 @@ onBeforeUnmount(() => { disposed = true; historyGeneration++; suggestionGenerati
         <ConversationTurns :turns="turns" :readonly="!!conversation?.closed_at" @retry="retry" />
       </div></div>
       <footer class="chat-composer"><el-button v-if="!pinned && turns.length" circle :icon="ArrowDown" class="scroll-latest" aria-label="滚动到最新消息" @click="scrollToLatest" /><div class="composer-box">
+        <ConversationLengthNotice v-if="conversation" :turn-count="conversation.turn_count" :disabled="busy || loading" @new-conversation="navigate()" />
         <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
         <el-button v-if="error && route.query.conversation_id" text @click="open(String(route.query.conversation_id))">刷新当前对话</el-button>
         <el-alert v-if="conversation?.closed_at || (conversation && conversation.knowledge_base_status !== 'active')" title="此会话目前只读，可查看已有历史。" type="info" :closable="false" />

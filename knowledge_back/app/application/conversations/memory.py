@@ -8,7 +8,7 @@ from ...core.extensions import db
 from ...entities import QAConversation, QALog, now
 from ...integrations.ai.chat_adapter import ChatError, ChatFormatError, complete_json
 from ...integrations.ai.schemas import ResolvedQuestion, Summary
-from ..prompts.registry import get_prompt
+from ..prompts.registry import get_prompt, robot_prompt
 from .service import COMPLETED
 
 
@@ -147,7 +147,7 @@ def resolve_question(question, context, *, robot=False):
     if not context.get("turns") and not context.get("summary"):
         return {"resolved_question": question, "clarification": None}
     payload, _ = complete_json(
-        get_prompt("resolve_robot" if robot else "resolve_web"),
+        robot_prompt("resolve_robot") if robot else get_prompt("resolve_web"),
         {"question": question, "history": context},
         timeout_seconds=35,
         schema=ResolvedQuestion,

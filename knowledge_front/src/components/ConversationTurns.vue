@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import MarkdownContent from "./MarkdownContent.vue";
 import SourceContent from "./SourceContent.vue";
-import { pending, statusText, type Turn } from "../lib/conversations";
+import { answerKindNames, pending, statusText, type Turn } from "../lib/conversations";
 defineProps<{
   turns: Turn[];
   readonly?: boolean;
@@ -32,15 +32,15 @@ defineEmits<{ retry: [turn: Turn]; trace: [turn: Turn] }>();
         :aria-busy="pending(turn)"
       >
         <div class="message-heading">
-          <strong>{{ plain ? "机器人回答" : "知识库回答" }}</strong>
-          <span>{{ statusText(turn.status) }}</span>
+          <strong>{{ plain ? "小维" : answerKindNames[turn.answer_kind] || "知识库回答" }}</strong>
+          <span>{{ statusText(turn.status) }}</span><el-tag v-if="showTrace && turn.answer_kind" size="small" type="info">{{ answerKindNames[turn.answer_kind] || turn.answer_kind }}</el-tag>
         </div>
         <div
           v-if="pending(turn)"
           class="thinking"
         >
           <span class="thinking-dot" />
-          正在整理资料，离开页面后仍会继续处理…
+          {{ plain ? '小维正在思考…' : '正在整理回答，离开页面后仍会继续处理…' }}
         </div>
         <div
           v-if="plain && turn.answer"
@@ -60,12 +60,6 @@ defineEmits<{ retry: [turn: Turn]; trace: [turn: Turn] }>();
           :closable="false"
           show-icon
         />
-        <p
-          v-if="turn.context_notice"
-          class="context-notice"
-        >
-          {{ turn.context_notice }}
-        </p>
         <el-button
           v-if="showTrace"
           class="trace-button"
@@ -243,10 +237,6 @@ defineEmits<{ retry: [turn: Turn]; trace: [turn: Turn] }>();
 .turn-metadata > div {
   padding: 5px 0;
   overflow-wrap: anywhere;
-}
-.context-notice {
-  font-size: 12px;
-  color: #927133;
 }
 @keyframes pulse {
   50% {

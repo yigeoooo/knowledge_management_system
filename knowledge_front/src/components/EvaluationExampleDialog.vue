@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, session } from '../lib/session'
+import { answerKindNames } from '../lib/conversations'
 import type { Dataset, EvaluationDocument, Example } from '../lib/evaluations'
 import EvaluationDocumentPreview from './EvaluationDocumentPreview.vue'
 import EvaluationHistoryImportDialog, { type ImportedHistory } from './EvaluationHistoryImportDialog.vue'
@@ -9,7 +10,7 @@ import EvaluationHistoryImportDialog, { type ImportedHistory } from './Evaluatio
 const props = defineProps<{ open: boolean; dataset: Dataset | undefined; example: Example | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 interface HistoryTurn { question: string; answer: string; [key: string]: unknown }
-const form = reactive({ task: 'answer', name: '', question: '', robot: false, expected_document_ids: [] as string[], answer_points: '', forbidden_points: '', expected_status: '', reference_answer: '', source_notes: '', summary: '', turns: [] as HistoryTurn[] })
+const form = reactive({ task: 'answer', name: '', question: '', robot: false, expected_document_ids: [] as string[], answer_points: '', forbidden_points: '', expected_status: '', expected_answer_kind: '', reference_answer: '', source_notes: '', summary: '', turns: [] as HistoryTurn[] })
 const documents = ref<EvaluationDocument[]>([]), documentsLoading = ref(false), documentError = ref(''), saving = ref(false)
 const showSources = ref(true), expanded = ref(false), mobilePane = ref('question'), narrow = ref(false)
 const importingHistory = ref(false)
@@ -34,7 +35,7 @@ watch(() => props.open, open => {
     name: row?.name || '', question: row?.inputs.question || '', robot: row?.inputs.robot || false,
     expected_document_ids: [...(row?.reference.expected_document_ids || [])],
     answer_points: row?.reference.answer_points.join('\n') || '', forbidden_points: row?.reference.forbidden_points?.join('\n') || '',
-    expected_status: row?.reference.expected_status || '', reference_answer: row?.reference.reference_answer || '', source_notes: row?.reference.source_notes || '',
+    expected_status: row?.reference.expected_status || '', expected_answer_kind: row?.reference.expected_answer_kind || '', reference_answer: row?.reference.reference_answer || '', source_notes: row?.reference.source_notes || '',
     summary: typeof context.summary === 'string' ? context.summary : '',
     turns: turns.map(t => t && typeof t === 'object' ? ({ ...t, question: String(t.question || ''), answer: String(t.answer || '') }) : ({ question: String(t || ''), answer: '' })),
   })
@@ -81,7 +82,7 @@ async function save(status: 'draft' | 'enabled') {
   saving.value = true
   try {
     const context = historyNeeded.value ? { ...contextExtra, summary: form.summary, turns: form.turns } : {}
-    const payload = { status, name: form.name, inputs: { task: form.task === 'followup' ? 'answer' : form.task, question: form.question, robot: form.robot, context }, reference: { expected_document_ids: form.expected_document_ids, answer_points: lines(form.answer_points), forbidden_points: lines(form.forbidden_points), expected_status: form.expected_status || null, reference_answer: form.reference_answer, source_notes: form.source_notes }, expected_revision: props.example?.revision }
+    const payload = { status, name: form.name, inputs: { task: form.task === 'followup' ? 'answer' : form.task, question: form.question, robot: form.robot, context }, reference: { expected_document_ids: form.expected_document_ids, answer_points: lines(form.answer_points), forbidden_points: lines(form.forbidden_points), expected_status: form.expected_status || null, expected_answer_kind: form.robot && ['answer', 'followup'].includes(form.task) ? form.expected_answer_kind || null : null, reference_answer: form.reference_answer, source_notes: form.source_notes }, expected_revision: props.example?.revision }
     await api(props.example ? `/evaluations/examples/${props.example.id}` : `/evaluations/datasets/${props.dataset.id}/examples`, { method: props.example ? 'PUT' : 'POST', body: JSON.stringify(payload) })
     ElMessage.success(status === 'enabled' ? '测试题已保存并启用，可直接用于正式评测' : '已保存草稿，不参与发布验收')
     emit('saved')
@@ -106,7 +107,7 @@ onBeforeUnmount(() => { ++documentSequence; controller?.abort(); media?.removeEv
           </el-select><p class="help-text">可多选，也可在资料预览中点击“加入预期文档”。</p>
           <el-alert v-if="example?.document_issue" :title="`${example.document_issue}。原标注：${example.reference.expected_documents.join('、')}`" type="warning" :closable="false" /><el-alert v-if="documentError" :title="documentError" type="error" :closable="false"><el-button link @click="searchDocuments()">重试</el-button></el-alert>
         </el-form-item><el-form-item label="答案必需的事实要点（每行一条）"><el-input v-model="form.answer_points" type="textarea" :rows="3" placeholder="填写关键事实，自动指标仅检查字面覆盖" /></el-form-item></div>
-        <el-form-item label="参考答案（供人工对照）"><el-input v-model="form.reference_answer" type="textarea" :rows="3" maxlength="5000" /></el-form-item>
+        <el-form-item v-if="form.robot && ['answer', 'followup'].includes(form.task)" label="预期回答类型"><el-select v-model="form.expected_answer_kind" clearable placeholder="可选，用于检查机器人是否正确分流" aria-label="预期回答类型"><el-option v-for="(name, kind) in answerKindNames" :key="kind" :value="kind" :label="name" /></el-select><p class="help-text">闲聊、通识和实时信息说明可以不选预期文档，填写参考答案或关键要点即可。</p></el-form-item><el-form-item label="参考答案（供人工对照）"><el-input v-model="form.reference_answer" type="textarea" :rows="3" maxlength="5000" /></el-form-item>
         <el-form-item label="核对依据（文档章节、表格行及适用条件）"><el-input v-model="form.source_notes" type="textarea" :rows="2" maxlength="5000" /></el-form-item>
         <div class="form-columns"><el-form-item label="预期状态"><el-select v-model="form.expected_status" clearable placeholder="可选"><el-option label="完整回答" value="SUCCESS" /><el-option label="部分回答" value="PARTIAL" /><el-option label="资料不足" value="NO_EVIDENCE" /><el-option label="需要澄清" value="CLARIFICATION" /><el-option label="仅提供资料" value="SOURCES_ONLY" /></el-select></el-form-item><el-form-item label="不应出现的错误内容（每行一条）"><el-input v-model="form.forbidden_points" type="textarea" :rows="2" /></el-form-item></div>
         <section v-if="historyNeeded" class="history-editor" aria-label="历史问答">

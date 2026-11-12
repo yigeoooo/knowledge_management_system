@@ -121,6 +121,42 @@ test('comparison identifies the historical candidate and frozen baseline version
   await expect(answers.nth(1).locator('pre')).toContainText(original.content)
 })
 
+test('robot comparison shows the actual interaction kind and only prompts that executed', async ({ page }) => {
+  const persona = { ...original, id: 'persona-v1', content: '你是小维。' }
+  const interaction = { ...original, id: 'interaction-v1', content: '判断交流意图并自然回复。' }
+  const prompts = { ...run.snapshot.baseline, robot_persona: persona, robot_interaction: interaction }
+  const direct = { ...arm, outputs: { ...arm.outputs, answer: '你好，我是小维！', answer_kind: 'chat',
+    used_prompt_keys: ['robot_interaction', 'robot_persona'] } }
+  const result = { ...run, snapshot: { ...run.snapshot, baseline: prompts, candidate: prompts },
+    results: [{ ...run.results[0]!, baseline: direct, candidate: direct }] }
+  await page.route('**/evaluations/runs/r1', route => route.fulfill({ json: { code: 0, data: result } }))
+  await page.goto('/evaluations?run=r1')
+  const answers = page.getByRole('dialog', { name: '评测对比详情' }).locator('.answer-columns article')
+  await expect(answers.nth(0)).toContainText('自然交流')
+  await expect(answers.nth(0)).toContainText('机器人身份与表达 · v1')
+  await expect(answers.nth(1)).toContainText('机器人交流与分流 · v1')
+  await expect(answers.nth(1).locator('.answer-prompts')).not.toContainText('机器人简洁回答')
+})
+
+test('robot examples save an expected interaction kind without requiring a document', async ({ page }) => {
+  let saved: any
+  const greeting = { ...example, inputs: { ...example.inputs, question: '你好' },
+    reference: { ...example.reference, expected_document_ids: [], expected_documents: [], expected_answer_kind: 'chat' } }
+  await page.route('**/evaluations/datasets/d1/examples', route => route.fulfill({ json: { code: 0, data: { items: [greeting] } } }))
+  await page.route('**/evaluations/examples/e1', route => {
+    saved = route.request().postDataJSON()
+    return route.fulfill({ json: { code: 0, data: greeting } })
+  })
+  await page.goto('/evaluations')
+  await page.getByRole('button', { name: '查看 / 编辑', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '查看 / 编辑测试题' })
+  await expect(dialog.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '预期回答类型' }) })).toContainText('自然交流')
+  await dialog.getByRole('button', { name: '保存并启用', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  expect(saved.reference.expected_answer_kind).toBe('chat')
+  expect(saved.reference.expected_document_ids).toEqual([])
+})
+
 for (const scope of ['single', 'dataset'] as const) {
   for (const retryOne of [false, true]) {
     test(`failed ${scope} comparison retries ${retryOne ? 'one question' : 'all errors'} in the same record`, async ({ page }) => {

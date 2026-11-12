@@ -54,6 +54,15 @@ def release_reasons(version, run, current, *, lock_examples=False, dataset_id=No
         reasons.append("该实验未测试所选提示词版本")
     if version.prompt_key not in snapshot.get("covered_prompt_keys", []):
         reasons.append("测试题未覆盖此提示词用途")
+    usages = [r.get("candidate", {}).get("outputs", {}).get("used_prompt_keys") for r in run.results]
+    if any(usage is not None for usage in usages) and not any(
+        version.prompt_key in (usage or []) for usage in usages
+    ):
+        reasons.append("候选答案未实际执行此提示词，请添加对应回答类型的测试题后重新评测")
+    if version.prompt_key == "robot_interaction" and any(
+        r.get("candidate", {}).get("outputs", {}).get("routing_fallback") for r in run.results
+    ):
+        reasons.append("候选交流分流出现异常回退，请修复后重新评测")
     expected = {**current, version.prompt_key: version_data(version)}
     if snapshot.get("candidate") != expected:
         reasons.append(

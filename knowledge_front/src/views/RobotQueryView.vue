@@ -7,6 +7,7 @@ import { api } from '../lib/session'
 import { type Conversation, type ConversationPage, type Turn } from '../lib/conversations'
 import { useRobotConversation, type RobotOption } from '../lib/useRobotConversation'
 import ConversationTurns from '../components/ConversationTurns.vue'
+import ConversationLengthNotice from '../components/ConversationLengthNotice.vue'
 
 const route = useRoute(), router = useRouter()
 const robots = ref<RobotOption[]>([]), robotId = ref(''), robotsLoading = ref(true), robotsError = ref('')
@@ -117,13 +118,14 @@ onBeforeUnmount(() => { disposed = true; historyGeneration++ })
       </header>
       <div ref="messagePanel" v-loading="loading || robotsLoading" class="chat-messages" @scroll="trackScroll"><div class="message-column">
         <el-button v-if="nextBefore" text :loading="loading" @click="older">加载更早消息</el-button>
-        <div v-if="!turns.length && !loading" class="chat-welcome"><el-icon :size="38"><Cpu /></el-icon><h2>像机器人一样，开始提问</h2><p>选择机器人，即可使用它绑定的知识库测试问答。<br>同一对话记住上下文，新对话独立开始。</p>
+        <div v-if="!turns.length && !loading" class="chat-welcome"><el-icon :size="38"><Cpu /></el-icon><h2>和小维聊一聊</h2><p>可以打个招呼、聊聊常识，也可以查询机器人绑定的知识库。<br>同一对话记住上下文，新对话独立开始。</p>
           <p v-if="robot" class="robot-identity">{{ robot.name || '机器人' }} · {{ robot.serial_no }}</p>
           <p v-else-if="!robotsLoading && !robotsError">暂无机器人，请先在机器人管理中创建并绑定知识库。</p>
         </div>
         <ConversationTurns :turns="turns" :readonly="readonly" :retry-disabled="busy" plain @retry="retryAnswer" />
       </div></div>
       <footer class="chat-composer"><el-button v-if="!pinned && turns.length" circle :icon="ArrowDown" class="scroll-latest" aria-label="滚动到最新消息" @click="scrollToLatest" /><div class="composer-box">
+        <ConversationLengthNotice v-if="conversation" :turn-count="conversation.turn_count" :disabled="busy || loading" @new-conversation="navigate()" />
         <el-alert v-if="robotsError || error" :title="robotsError || error" type="error" :closable="false" show-icon />
         <el-button v-if="robotsError" text @click="loadRobots">重新加载机器人</el-button>
         <el-button v-if="error && route.query.conversation_id && !sending" text @click="open(String(route.query.conversation_id))">刷新当前对话</el-button>

@@ -9,14 +9,14 @@ from ...integrations.ai.chat_adapter import ChatFormatError, complete_json
 from ...integrations.ai.schemas import AnswerDraft, Review, SuggestionReview, Suggestions
 from ...processors.answer_text import robot_answer_text
 from ...processors.markdown import markdown_blocks
-from ..prompts.registry import bootstrap_content, get_prompt, with_prompts
+from ..prompts.registry import bootstrap_content, get_prompt, robot_prompt, with_prompts
 
 logger = logging.getLogger(__name__)
 NO_EVIDENCE = "当前资料不足以回答这个问题。可以补充具体主题，或查看相关资料后继续提问。"
 PARTIAL_NOTICE = "以上是资料中可以确认的部分，其余内容暂未找到充分依据。"
 FORMAT_NOTICE = "暂未能整理出可核实的回答，已为你列出相关资料，可以先查看原文或换一种问法。"
-ROBOT_NO_EVIDENCE = "当前资料不足，暂时无法回答。"
-ROBOT_FORMAT_NOTICE = "暂时无法整理出可靠回答，请换个问法。"
+ROBOT_NO_EVIDENCE = "这个问题小维还没有找到可靠资料，暂时不能确定。"
+ROBOT_FORMAT_NOTICE = "小维暂时没能整理出可靠的回答，你可以换个问法再试试。"
 ANSWER_PROMPT = bootstrap_content("answer_web")
 ROBOT_ANSWER_PROMPT = bootstrap_content("answer_robot")
 REVIEW_PROMPT = bootstrap_content("review_answer")
@@ -133,10 +133,11 @@ def _checks(payload, expected):
 def _call(prompt, material, deadline, *, max_tokens=4096):
     if deadline - monotonic() < 1:
         raise ChatFormatError("本次整理的时间预算已用完")
+    key = {ANSWER_PROMPT: "answer_web", ROBOT_ANSWER_PROMPT: "answer_robot",
+           REVIEW_PROMPT: "review_answer", SUGGEST_PROMPT: "suggest_questions",
+           SUGGEST_REVIEW_PROMPT: "review_suggestions"}[prompt]
     return complete_json(
-        get_prompt({ANSWER_PROMPT: "answer_web", ROBOT_ANSWER_PROMPT: "answer_robot",
-                    REVIEW_PROMPT: "review_answer", SUGGEST_PROMPT: "suggest_questions",
-                    SUGGEST_REVIEW_PROMPT: "review_suggestions"}[prompt]),
+        robot_prompt(key) if key == "answer_robot" else get_prompt(key),
         material, max_tokens=max_tokens, timeout_seconds=deadline - monotonic(),
         schema={ANSWER_PROMPT: AnswerDraft, ROBOT_ANSWER_PROMPT: AnswerDraft,
                 REVIEW_PROMPT: Review, SUGGEST_PROMPT: Suggestions,

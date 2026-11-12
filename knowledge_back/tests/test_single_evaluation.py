@@ -126,7 +126,7 @@ def test_single_question_prompt_coverage_uses_selected_question_only(client, adm
         json={**payload, 'name': '摘要题', 'inputs': {'task': 'summary', 'robot': False,
             'question': '压缩会话', 'context': {'turns': [{'question': '门票多少钱', 'answer': '99元'}]}}}).json['data']
     assert summary['prompt_keys'] == ['summarize']
-    assert example['prompt_keys'] == ['answer_robot', 'review_answer']
+    assert example['prompt_keys'] == ['answer_robot', 'review_answer', 'robot_interaction', 'robot_persona']
     _, candidate = save(client, admin, key='summarize')
     response = client.post('/api/v1/evaluations/runs', headers=admin,
         json=single_request(dataset, overrides={'summarize': candidate['id']}))
@@ -189,7 +189,7 @@ def test_run_history_filters_before_limit_and_preserves_legacy_scope(app, client
 @pytest.mark.parametrize('robot', [True, False])
 def test_evaluation_history_reaches_understanding_generation_and_review(app, client, admin, dataset, monkeypatch, scope, robot):
     from app.application.conversations import memory
-    from app.application.qa import grounding_service, workflow
+    from app.application.qa import grounding_service, robot_interaction, workflow
     from app.application.qa.retrieval_service import AnswerMaterial
     from app.integrations.ai.schemas import AnswerDraft, Review
     did, example, payload = dataset
@@ -234,6 +234,7 @@ def test_evaluation_history_reaches_understanding_generation_and_review(app, cli
         if schema is AnswerDraft:
             return {'answerable': True, 'blocks': [{'text': '按统一票价99元估算，8人共792元。', 'evidence_ids': ['S1.1']}]}, 'test'
         return {'complete': True, 'checks': [{'id': '1', 'supported': True}]}, 'test'
+    monkeypatch.setattr(robot_interaction, 'complete_json', lambda *a, **k: ({'kind': 'knowledge', 'answer': None}, 'test'))
     monkeypatch.setattr(memory, 'complete_json', understand)
     monkeypatch.setattr(workflow, 'retrieve_for_answer', retrieve)
     monkeypatch.setattr(grounding_service, 'complete_json', complete)

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...core.extensions import db
 from ...entities import KnowledgeBase
-from ..prompts.registry import with_prompts
+from ..prompts.registry import track_prompt_usage, with_prompts
 from .retrieval_service import retrieve_for_answer
 from .workflow import answer_question
 
@@ -28,6 +28,7 @@ class Reference(BaseModel):
     expected_document_ids: list[str] = Field(default_factory=list, max_length=30)
     answer_points: list[str] = Field(default_factory=list)
     expected_status: str | None = None
+    expected_answer_kind: Literal["knowledge", "chat", "general", "realtime", "clarification"] | None = None
     reference_answer: str = Field(default="", max_length=5000)
     source_notes: str = Field(default="", max_length=5000)
     forbidden_points: list[str] = Field(default_factory=list)
@@ -62,6 +63,8 @@ def metrics(outputs, reference):
     if outputs.get("mode") != "retrieval":
         if reference.get("expected_status"):
             result["status_accuracy"] = float(outputs.get("status") == reference["expected_status"])
+        if reference.get("expected_answer_kind"):
+            result["answer_kind_accuracy"] = float(outputs.get("answer_kind") == reference["expected_answer_kind"])
         points = reference.get("answer_points") or []
         if points:
             result["answer_point_literal_coverage"] = sum(p in (outputs.get("answer") or "") for p in points) / len(points)
@@ -114,7 +117,9 @@ def evaluate_input(inputs, *, retrieval_only=False, trace_context=None):
                     "retrieved_document_ids": [s["document_id"] for s in material.context],
                     "cited_document_ids": [q["source"]["document_id"] for q in questions],
                     "cited_documents": [q["source"]["document_title"] for q in questions]}
-        result = record_turn(operation, metadata={"knowledge_base_id": base_id, **(trace_context or {})}, robot=inputs.robot)
+        with track_prompt_usage() as used_prompts:
+            result = record_turn(operation, metadata={"knowledge_base_id": base_id, **(trace_context or {})}, robot=inputs.robot)
+        result["execution_trace"]["used_prompt_keys"] = sorted(used_prompts)
     if inputs.robot and inputs.task == "answer":
         from ...processors.answer_text import robot_answer_text
         result["answer"] = robot_answer_text(result["answer"], result["sources"])
@@ -125,6 +130,9 @@ def evaluate_input(inputs, *, retrieval_only=False, trace_context=None):
     document_ids = trace.get("context_document_ids") or [s["document_id"] for s in trace.get("ranked", []) if s["chunk_id"] in selected]
     return {"mode": inputs.task, "answer": result["answer"], "status": "CLARIFICATION" if result.get("answer_kind") == "clarification" else result["status"],
             "resolved_question": result.get("resolved_question"),
+            "answer_kind": result.get("answer_kind"),
+            "used_prompt_keys": result["execution_trace"].get("used_prompt_keys"),
+            "routing_fallback": result["execution_trace"].get("interaction", {}).get("fallback"),
             "retrieved_documents": result.get("retrieved_documents", titles),
             "retrieved_document_ids": result.get("retrieved_document_ids", document_ids),
             "cited_documents": result.get("cited_documents", [s["document_title"] for s in result["sources"] if s.get("source_id")]),

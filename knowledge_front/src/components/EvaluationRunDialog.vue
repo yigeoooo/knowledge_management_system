@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../lib/session'
+import { answerKindNames } from '../lib/conversations'
 import { metricNames, percentage, runStatus, type PromptVersion, type Run } from '../lib/evaluations'
 import MarkdownContent from './MarkdownContent.vue'
 import EvaluationProgress from './EvaluationProgress.vue'
@@ -40,7 +41,7 @@ const navigationExamples = computed(() => props.run?.snapshot?.examples.map(e =>
 const retryableCount = computed(() => navigationExamples.value.filter(e => e.retryable).length)
 const retryPending = computed(() => props.run?.results?.some(r => r.retry_pending?.length) && !finished.value)
 
-const promptNames: Record<string, string> = { answer_robot: '机器人简洁回答', answer_web: '网页回答', resolve_robot: '机器人追问理解', resolve_web: '网页追问理解', review_answer: '答案证据审阅', review_suggestions: '推荐问题审阅', suggest_questions: '推荐问题', summarize: '会话摘要' }
+const promptNames: Record<string, string> = { robot_persona: '机器人身份与表达', robot_interaction: '机器人交流与分流', answer_robot: '机器人简洁回答', answer_web: '网页回答', resolve_robot: '机器人追问理解', resolve_web: '网页追问理解', review_answer: '答案证据审阅', review_suggestions: '推荐问题审阅', suggest_questions: '推荐问题', summarize: '会话摘要' }
 function promptName(key: string, version?: PromptVersion) {
   return (version && props.run?.prompt_details?.[version.id]?.name) || promptNames[key] || key
 }
@@ -52,11 +53,11 @@ const questionPromptKeys = computed(() => {
   if (!input) return []
   if (input.task === 'summary') return ['summarize']
   if (input.task === 'suggestions') return ['suggest_questions', 'review_suggestions']
-  return [input.robot ? 'answer_robot' : 'answer_web',
+  return [...(input.robot ? ['robot_persona', 'robot_interaction'] : []), input.robot ? 'answer_robot' : 'answer_web',
     ...(hasHistory.value ? [input.robot ? 'resolve_robot' : 'resolve_web'] : []), 'review_answer']
 })
 function armPrompts(arm: 'baseline' | 'candidate') {
-  return questionPromptKeys.value.flatMap(key => {
+  return (pair.value?.[arm].outputs.used_prompt_keys ?? questionPromptKeys.value).flatMap(key => {
     const version = props.run?.snapshot?.[arm][key]
     return version ? [{ key, ...version, name: promptName(key, version), note: props.run?.prompt_details?.[version.id]?.note || version.note || '' }] : []
   })
@@ -114,14 +115,14 @@ function exportRun() {
           </div>
         </aside>
         <section class="comparison-content">
-          <template v-if="example"><h3>{{ example.inputs.question }}</h3><div class="reference"><strong>参考标注</strong><p>{{ example.reference.reference_answer || example.reference.answer_points.join('；') || '按文档与状态判断' }}</p><span>预期文档：{{ example.reference.expected_documents.join('、') || '未标注' }} · 预期状态：{{ example.reference.expected_status || '未标注' }}</span><p v-if="example.reference.source_notes">核对依据：{{ example.reference.source_notes }}</p></div></template>
+          <template v-if="example"><h3>{{ example.inputs.question }}</h3><div class="reference"><strong>参考标注</strong><p v-if="example.reference.expected_answer_kind">预期回答类型：{{ answerKindNames[example.reference.expected_answer_kind] }}</p><p>{{ example.reference.reference_answer || example.reference.answer_points.join('；') || '按文档与状态判断' }}</p><span>预期文档：{{ example.reference.expected_documents.join('、') || '未标注' }} · 预期状态：{{ example.reference.expected_status || '未标注' }}</span><p v-if="example.reference.source_notes">核对依据：{{ example.reference.source_notes }}</p></div></template>
           <EvaluationContext v-if="example && example.inputs.task !== 'suggestions'" :key="`${run.id}:${example.id}`" :context="example.inputs.context || {}" />
           <div v-if="pair" class="answer-columns"><article v-for="arm in (['baseline', 'candidate'] as const)" :key="arm"><h4>{{ arm === 'baseline' ? '基线 · 实验固定版本' : '候选 · 所选试测版本' }}</h4>
             <div class="answer-prompts">
               <div v-for="version in armPrompts(arm)" :key="version.key" class="answer-prompt-version"><el-tag size="small" :type="arm === 'candidate' && version.id !== run.snapshot?.baseline[version.key]?.id ? 'primary' : 'info'">{{ version.name }} · v{{ version.version }}</el-tag><span v-if="version.note">{{ version.note }}</span></div>
               <details v-if="armPrompts(arm).length"><summary>查看本题提示词正文</summary><div v-for="version in armPrompts(arm)" :key="version.key"><strong>{{ version.name }} · v{{ version.version }}</strong><pre>{{ version.content }}</pre></div></details>
             </div>
-            <el-alert v-if="pair.retry_pending?.includes(arm) && !finished" title="此版本正在等待重测结果…" type="info" :closable="false" /><template v-else-if="pair[arm].error"><el-alert :title="`执行失败：${pair[arm].error_message || pair[arm].error}`" type="error" :closable="false" /><small v-if="pair[arm].outputs.run_id" class="error-trace">LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></template><template v-else><div class="answer-meta">{{ pair[arm].outputs.status }} · {{ ((pair[arm].outputs.latency_ms || 0) / 1000).toFixed(1) }} 秒 · 输入 {{ pair[arm].outputs.token_usage?.input_tokens ?? '—' }} / 输出 {{ pair[arm].outputs.token_usage?.output_tokens ?? '—' }} tokens</div><div v-if="hasHistory && pair[arm].outputs.resolved_question" class="resolved-question"><strong>结合历史理解的问题</strong><p>{{ pair[arm].outputs.resolved_question }}</p></div><MarkdownContent :content="pair[arm].outputs.answer || ''" /><details><summary>查看逐题指标及引用</summary><p v-for="(value, key) in pair[arm].scores" :key="key">{{ metricNames[key] || key }}：{{ percentage(value) }}</p><p>召回文档：{{ pair[arm].outputs.retrieved_documents?.join('、') || '无' }}</p><p>引用文档：{{ pair[arm].outputs.cited_documents?.join('、') || '无' }}</p><small>LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></details></template></article></div>
+            <el-alert v-if="pair.retry_pending?.includes(arm) && !finished" title="此版本正在等待重测结果…" type="info" :closable="false" /><template v-else-if="pair[arm].error"><el-alert :title="`执行失败：${pair[arm].error_message || pair[arm].error}`" type="error" :closable="false" /><small v-if="pair[arm].outputs.run_id" class="error-trace">LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></template><template v-else><el-alert v-if="pair[arm].outputs.routing_fallback" title="本题交流分流异常，已回退知识库流程，请重测确认分流效果。" type="warning" :closable="false" /><el-tag v-if="pair[arm].outputs.answer_kind" size="small" class="answer-kind">{{ answerKindNames[pair[arm].outputs.answer_kind] || pair[arm].outputs.answer_kind }}</el-tag><div class="answer-meta">{{ pair[arm].outputs.status }} · {{ ((pair[arm].outputs.latency_ms || 0) / 1000).toFixed(1) }} 秒 · 输入 {{ pair[arm].outputs.token_usage?.input_tokens ?? '—' }} / 输出 {{ pair[arm].outputs.token_usage?.output_tokens ?? '—' }} tokens</div><div v-if="hasHistory && pair[arm].outputs.resolved_question" class="resolved-question"><strong>结合历史理解的问题</strong><p>{{ pair[arm].outputs.resolved_question }}</p></div><MarkdownContent :content="pair[arm].outputs.answer || ''" /><details><summary>查看逐题指标及引用</summary><p v-for="(value, key) in pair[arm].scores" :key="key">{{ metricNames[key] || key }}：{{ percentage(value) }}</p><p>召回文档：{{ pair[arm].outputs.retrieved_documents?.join('、') || '无' }}</p><p>引用文档：{{ pair[arm].outputs.cited_documents?.join('、') || '无' }}</p><small>LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></details></template></article></div>
           <el-empty v-else description="这道题还没有完成评测" :image-size="60" />
           <el-form v-if="pair && finished && !pair.baseline.error && !pair.candidate.error" class="human-review" label-position="top" :disabled="retrying">
             <h4>确认本题结果</h4>
@@ -144,6 +145,7 @@ function exportRun() {
   </el-dialog>
 </template>
 <style scoped>
+.answer-kind{margin-bottom:12px}
 .question-item{border-radius:9px;margin-bottom:6px;overflow:hidden;color:#46556a}.question-item .question-retry{margin:0 12px 12px;font-size:12px}
 .retry-panel{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 20px;background:#fff8ed;border:1px solid #f2dfbf;border-radius:12px;padding:16px 18px;margin-bottom:18px}.retry-panel>div:first-child{flex:1;min-width:220px}.retry-panel strong{font-size:14px;color:#8b632d}.retry-panel p{font-size:12px;line-height:1.8;color:#907650;margin:6px 0 0}.retry-panel .el-alert{flex-basis:100%}.answer-prompts{margin-bottom:16px}.answer-prompt-version{display:flex;align-items:flex-start;flex-direction:column;gap:5px;margin-bottom:8px}.answer-prompt-version .el-tag{height:auto;white-space:normal;line-height:1.6;padding:3px 7px}.answer-prompt-version>span:not(.el-tag){font-size:11px;line-height:1.7;color:#8794a6}.answer-prompts details{margin:10px 0 0;padding:0;border:0}.answer-prompts details>div{margin-top:12px}.answer-prompts pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;background:#f6f8fb;border-radius:6px;line-height:1.7}.version-relation{margin-left:8px;color:#8995a7;font-size:11px}.error-trace{display:block;color:#8995a7;overflow-wrap:anywhere;font-size:11px;margin-top:10px}
 

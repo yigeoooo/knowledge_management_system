@@ -55,7 +55,7 @@ def environment(base_id):
         .order_by(DocumentVersion.id)
     ).all()
     return {
-        "pipeline_version": "rag-v2-prompts-v3-conversation-input",
+        "pipeline_version": "rag-v2-prompts-v4-robot-interaction",
         "config": {key: current_app.config.get(key) for key in CONFIG_KEYS},
         "index": [
             {
@@ -77,6 +77,8 @@ def prompt_keys_for_input(inputs):
     if task == "suggestions":
         return {"suggest_questions", "review_suggestions"}
     covered = {"answer_robot" if inputs.get("robot") else "answer_web", "review_answer"}
+    if inputs.get("robot"):
+        covered.update({"robot_persona", "robot_interaction"})
     context = inputs.get("context") or {}
     if context.get("turns") or context.get("summary"):
         covered.add("resolve_robot" if inputs.get("robot") else "resolve_web")

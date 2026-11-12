@@ -30,7 +30,7 @@ def test_init_sql_is_current_and_followup_upgrade_is_safe():
             with db.engine.connect() as connection:
                 connection.exec_driver_sql(sql)
                 connection.commit()
-            assert db.session.scalar(text('SELECT version_num FROM alembic_version')) == 'e42b6c8d901a'
+            assert db.session.scalar(text('SELECT version_num FROM alembic_version')) == 'f73a20bd961e'
             inspector = inspect(db.engine)
             assert any(c['column_names'] == ['knowledge_base_id'] for c in inspector.get_unique_constraints('evaluation_datasets', schema=schema))
             for table, expected in {'qa_logs': {'execution_trace': 'JSON'},
@@ -44,7 +44,7 @@ def test_init_sql_is_current_and_followup_upgrade_is_safe():
         result = app.test_cli_runner().invoke(args=['db', 'upgrade'])
         assert result.exit_code == 0, result.output
         with app.app_context():
-            assert db.session.scalar(text('SELECT version_num FROM alembic_version')) == 'e42b6c8d901a'
+            assert db.session.scalar(text('SELECT version_num FROM alembic_version')) == 'f73a20bd961e'
         # Also exercise the upgrade against real duplicate PostgreSQL data.
         result = app.test_cli_runner().invoke(args=['db', 'downgrade', 'd31f9a827c60'])
         assert result.exit_code == 0, result.output

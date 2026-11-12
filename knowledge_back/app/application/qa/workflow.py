@@ -11,10 +11,17 @@ from ...integrations.ai.langchain_adapters import KnowledgeBaseRetriever, docume
 from ...integrations.ai.langsmith_config import tracing_scope
 from ...integrations.ai.langsmith_reader import destination
 from ..conversations.memory import resolve_question
-from ..prompts.registry import prompt_fingerprint, prompt_metadata, with_prompts
+from ..prompts.registry import (
+    has_prompt,
+    prompt_fingerprint,
+    prompt_metadata,
+    track_prompt_usage,
+    with_prompts,
+)
 from .grounding_service import NO_EVIDENCE, ROBOT_NO_EVIDENCE, generate_answer
 from .observability import RunRecorder
 from .retrieval_service import AnswerMaterial, retrieve_for_answer
+from .robot_interaction import classify_interaction
 
 
 class AnswerState(TypedDict, total=False):
@@ -28,6 +35,18 @@ class AnswerState(TypedDict, total=False):
     documents: list[Document]
     material: Any
     result: dict
+    interaction: dict
+
+
+def route_interaction(state):
+    return {"interaction": classify_interaction(state["question"], state["context"], state["knowledge_base_id"])}
+
+
+def direct_answer(state):
+    interaction = state["interaction"]
+    return {"result": {"answer": interaction["answer"], "sources": [],
+                       "model_name": interaction["model"], "status": "SUCCESS", "retrieval_count": 0,
+                       "answer_kind": interaction["kind"], "resolved_question": state["question"]}}
 
 
 def understand(state):
@@ -108,7 +127,13 @@ def build_workflow():
     graph.add_node("retrieve", retrieve)
     graph.add_node("grounded_answer", grounded_answer)
     graph.add_node("clarify", clarify)
-    graph.add_edge(START, "understand")
+    graph.add_node("route_interaction", route_interaction)
+    graph.add_node("direct_answer", direct_answer)
+    graph.add_conditional_edges(START, lambda s: "route_interaction"
+                               if s.get("robot") and has_prompt("robot_interaction") else "understand")
+    graph.add_conditional_edges("route_interaction", lambda s: "understand"
+                               if s["interaction"]["kind"] == "knowledge" else "direct_answer")
+    graph.add_edge("direct_answer", END)
     graph.add_conditional_edges(
         "understand", lambda s: "clarify" if s.get("clarification") else "retrieve"
     )
@@ -139,6 +164,7 @@ def answer_question(
     metadata["prompt_versions"] = prompt_metadata()
     run_id = uuid4()
     recorder = RunRecorder()
+    used_prompts = set()
     def diagnostic(state=None):
         material = (state or {}).get("material")
         return {
@@ -148,10 +174,13 @@ def answer_question(
             "destination": destination(current_app.config),
                 "content_captured": current_app.config.get("LANGSMITH_CAPTURE_CONTENT", False),
             "retrieval": material.scope.get("retrieval", {}) if material else {},
+            "used_prompt_keys": sorted(used_prompts),
+            "interaction": {k: v for k, v in (state or {}).get("interaction", {}).items()
+                            if k in {"kind", "fallback"}},
         }
 
     try:
-        with tracing_scope():
+        with tracing_scope(), track_prompt_usage() as used_prompts:
             state = workflow.invoke(
                 {"question": question, "knowledge_base_id": base_id, "context": context,
                  "anchor": anchor, "robot": robot},

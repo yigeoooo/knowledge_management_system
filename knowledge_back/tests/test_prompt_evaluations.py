@@ -156,6 +156,7 @@ def test_summary_and_suggestions_use_the_selected_prompt_versions(app, monkeypat
             result = evaluate_input({'question':'压缩历史','knowledge_base_code':base.code,'task':'summary',
                 'context':{'turns':[{'question':'我带孩子出游'}]}})
         assert result['answer'] == '用户计划带孩子游玩石海'
+        assert result['used_prompt_keys'] == ['summarize']
         assert seen[0][0] == '摘要候选版本'
         monkeypatch.setattr(evaluation, 'retrieve_for_answer', lambda *args: SimpleNamespace(context=[{'document_title':'票价表','document_id':'price-id'}]))
         monkeypatch.setattr(grounding_service, 'generate_suggestions', lambda sources: [{'question':'科普游套票多少钱？','source':{'document_title':'票价表','document_id':'price-id'}}])

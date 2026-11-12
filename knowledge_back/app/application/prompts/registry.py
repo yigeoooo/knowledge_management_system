@@ -13,9 +13,11 @@ from ...core.extensions import db
 
 _BOOTSTRAP = {
     p["key"]: p
-    for p in json.loads((Path(__file__).parents[2] / "resources/prompts-v1.json").read_text())
+    for filename in ("prompts-v1.json", "robot-interaction-v1.json")
+    for p in json.loads((Path(__file__).parents[2] / "resources" / filename).read_text())
 }
 _current = ContextVar("prompt_snapshot", default=None)
+_used = ContextVar("used_prompt_keys", default=None)
 
 
 def bootstrap_content(key):
@@ -73,12 +75,36 @@ def with_prompts(operation):
 
 
 def get_prompt(key):
+    used = _used.get()
+    if used is not None:
+        used.add(key)
     snapshot = _current.get()
     if snapshot is not None:
         return snapshot[key]["content"]
     if not has_app_context():
         return bootstrap_content(key)
     return published_snapshot()[key]["content"]
+
+
+def has_prompt(key):
+    """Old frozen turns must not silently pick up newly published instructions."""
+    snapshot = _current.get()
+    return key in (snapshot if snapshot is not None else _BOOTSTRAP)
+
+
+def robot_prompt(key):
+    instruction = get_prompt(key)
+    return get_prompt("robot_persona") + "\n\n" + instruction if has_prompt("robot_persona") else instruction
+
+
+@contextmanager
+def track_prompt_usage():
+    used = set()
+    token = _used.set(used)
+    try:
+        yield used
+    finally:
+        _used.reset(token)
 
 
 def prompt_metadata():

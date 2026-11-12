@@ -131,6 +131,28 @@ test('unavailable history cannot silently submit a question as a new conversatio
   await expect(page.getByRole('textbox', { name: '你的问题' })).toBeEnabled()
 })
 
+test('restored long web history shows a session suggestion and keeps the original history', async ({ page }) => {
+  const longConversation = { ...conversation, turn_count: 201, last_turn_no: 201 }
+  await page.route(`**/web/conversations/${conversation.id}/turns`, route => route.fulfill({
+    json: { code: 0, data: { conversation: longConversation,
+      items: [{ ...turn, turn_no: 201, context_notice: '较早对话摘要已缩短，如有遗漏请补充具体内容。' }], next_before: 201 } },
+  }))
+  await page.goto('/qa?conversation_id=conversation-1')
+  const notice = page.getByRole('status', { name: '长对话提醒' })
+  await expect(notice).toContainText('当前已聊 201 轮')
+  await expect(page.locator('.conversation-turn')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: '加载更早消息' })).toBeVisible()
+  await expect(page.getByText('较早对话摘要已缩短，如有遗漏请补充具体内容。')).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: '你的问题' })).toBeEnabled()
+  await notice.getByRole('button', { name: '开启新对话' }).click()
+  await expect(notice).toHaveCount(0)
+  await expect(page.locator('.conversation-turn')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/qa$/)
+  await page.locator('.history-open').click()
+  await expect(notice).toContainText('201 轮')
+  await expect(page.locator('.conversation-answer')).toContainText('蜀南竹海')
+})
+
 test('admin switches user and robot histories without retaining another owner’s messages', async ({ page }) => {
   const exported: string[] = []
   let expiredDownload = false

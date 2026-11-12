@@ -166,7 +166,7 @@ SCHEMA["qa_logs"][1].update({
     "conversation_id": "所属会话；历史兼容记录可为空。",
     "turn_no": "会话内单调递增轮次。",
     "resolved_question": "结合当前会话理解后的独立检索问题。",
-    "answer_kind": "knowledge 知识回答或 clarification 澄清。",
+    "answer_kind": "knowledge 知识回答、clarification 澄清、chat 闲聊、general 通识、realtime 实时信息能力说明。",
     "context_snapshot": "本轮使用的摘要和历史原文快照。",
     "lease_token": "执行租约唯一标识，防止过期任务写回。",
     "lease_expires_at": "租约到期时间。",

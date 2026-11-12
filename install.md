@@ -322,7 +322,9 @@ uv run flask --app app qa-worker
 
 可同时运行多个 Worker，数据库行锁和租约防止重复写回答案；进程中断后，过期任务可重新领取。默认租约 300 秒、每 20 秒续租，最多自动尝试 3 次；最后一轮失败可在页面手动重试。`qa-worker --once` 最多处理一个任务，适合检查配置。
 
-`LANGCHAIN_CHAT_ENABLED=true` 使用 LangChain 的 DeepSeek 适配器，LangGraph 执行固定问答流程；设为 `false` 仅切换回原 HTTP 模型适配器，仍使用会话流程。`QA_RECENT_TURNS` 默认 6，`QA_HISTORY_BUDGET` 默认 9000，为历史 JSON 的 UTF-8 字节上限，用作保守 token 预算。长历史每轮最多更新一次摘要；不能覆盖的历史会明确提示。
+`LANGCHAIN_CHAT_ENABLED=true` 使用 LangChain 的 DeepSeek 适配器，LangGraph 执行固定问答流程；设为 `false` 仅切换回原 HTTP 模型适配器，仍使用会话流程。`QA_RECENT_TURNS` 默认 6（范围1–20），`QA_HISTORY_BUDGET` 默认 9000（范围1000–32000），为摘要和近期历史 JSON 的 UTF-8 字节预算，不是 token 数。长历史每轮最多更新一次摘要；截短信息保存在上下文诊断中，问答页面不展示内部摘要提示。网页会话超过200轮时建议开启新对话，仍可继续当前会话。
+
+正常启动的配置优先级为：进程环境变量 → `knowledge_back/.env.local` → 代码默认值。`.env.example` 和 `.env.server.example` 只提供配置模板，不参与运行时加载；修改模板不会改变当前运行配置。修改 `.env.local` 后需重启后端及独立 worker；若进程环境中已有同名变量，需同时调整其来源。
 
 机器人同步请求格式、等待超时及错误码见 [机器人会话接入](knowledge_back/docs/robot-conversation-api.md)。
 

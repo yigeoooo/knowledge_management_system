@@ -64,6 +64,8 @@ def add_chunk(
 @pytest.fixture
 def qa_setup(app, client, monkeypatch):
     app.config.update(DASHSCOPE_EMBEDDING_MODEL="test-embedding", QA_MIN_SIMILARITY=0.3)
+    from app.application.qa import robot_interaction
+    monkeypatch.setattr(robot_interaction, 'complete_json', Mock(return_value=({'kind': 'knowledge', 'answer': None}, 'test-router')))
     embedding = Mock(return_value=([1.0, 0.0], "test-embedding"))
     completion = Mock(side_effect=AssertionError("Unexpected model call"))
     monkeypatch.setattr(retrieval_module, "embed_query", embedding)

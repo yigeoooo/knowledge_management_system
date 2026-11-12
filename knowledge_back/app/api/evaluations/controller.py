@@ -433,10 +433,10 @@ def set_example_status(row, status):
             raise ApiError("启用前请补全历史问题和回答，最多 30 轮；未完成时可保存草稿", 422)
         if not any(
             row.reference.get(k)
-            for k in ("answer_points", "expected_document_ids", "expected_status")
+            for k in ("answer_points", "expected_document_ids", "expected_status", "reference_answer", "expected_answer_kind")
         ):
             raise ApiError(
-                "启用前请至少填写答案要点、预期文档或预期状态；未完成的题目可保存草稿", 422
+                "启用前请至少填写答案要点、参考答案、预期文档、预期状态或回答类型；未完成的题目可保存草稿", 422
             )
         row.reviewed_by, row.reviewed_at = g.user.id, now()
     else:

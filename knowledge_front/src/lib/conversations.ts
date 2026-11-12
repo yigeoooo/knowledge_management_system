@@ -25,3 +25,5 @@ export const statusText = (status: string) => ({
   PENDING: '等待回答', PROCESSING: '正在查找资料并核实回答', SUCCESS: '已回答', PARTIAL: '部分内容有依据',
   NO_EVIDENCE: '资料不足', SOURCES_ONLY: '可查看相关资料', FAILED: '回答失败', CANCELLED: '已取消',
 }[status] || status)
+
+export const answerKindNames: Record<string, string> = { knowledge: '知识库回答', chat: '自然交流', general: '通识回答', realtime: '实时信息说明', clarification: '澄清问题' }

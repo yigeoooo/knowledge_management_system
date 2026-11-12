@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '../lib/session'
-import { statusText, type Turn } from '../lib/conversations'
+import { answerKindNames, statusText, type Turn } from '../lib/conversations'
 
 interface Run {
   id: string; parent_id?: string | null; name: string; run_type?: string; status: string
@@ -27,7 +27,7 @@ const activeTab = ref('inputs')
 let generation = 0, controller: AbortController | null = null
 const names: Record<string, string> = {
   'rag.turn': '本轮完整流程', prepare_memory: '整理会话记忆', 'rag.answer': '问答主流程', understand: '理解问题与追问', retrieve: '检索知识库',
-  grounded_answer: '生成并核验答案', clarify: '澄清问题', knowledge_retriever: '知识库检索器',
+  route_interaction: '识别交流意图', direct_answer: '直接交流回复', 'structured.RobotInteraction': '判断意图与生成交流回复', grounded_answer: '生成并核验答案', clarify: '澄清问题', knowledge_retriever: '知识库检索器',
   'rag.retrieval': '混合检索流程', hybrid_recall: '向量与关键词召回', rerank: '候选资料重排',
   expand_context: '扩展上下文', 'structured.ResolvedQuestion': '理解追问',
   'rag.grounding': '生成与核验流程', prepare: '准备回答依据', generate: '生成结构化回答', review: '核验回答与引用', repair: '修复回答', finalize: '整理最终答案',
@@ -89,7 +89,7 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
   <el-dialog v-model="visible" title="问答处理流程" width="min(1440px, 94vw)" align-center destroy-on-close append-to-body class="trace-detail-dialog">
     <div class="trace-page" v-loading="loading">
       <header class="trace-header">
-        <div><div class="trace-eyebrow">{{ trace?.source === 'langsmith' ? 'LANGSMITH TRACE' : 'EXECUTION TRACE' }}</div><h2>{{ turn?.question }}</h2><p v-if="turn">第 {{ turn.turn_no }} 轮 · {{ statusText(trace?.status || turn.status) }}</p></div>
+        <div><div class="trace-eyebrow">{{ trace?.source === 'langsmith' ? 'LANGSMITH TRACE' : 'EXECUTION TRACE' }}</div><h2>{{ turn?.question }}</h2><p v-if="turn">第 {{ turn.turn_no }} 轮 · {{ statusText(trace?.status || turn.status) }}<template v-if="turn.answer_kind"> · {{ answerKindNames[turn.answer_kind] || turn.answer_kind }}</template></p></div>
         <el-button :icon="Refresh" :disabled="loading" @click="load">刷新流程</el-button>
       </header>
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
@@ -118,7 +118,7 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
           </section>
         </div>
         <el-empty v-else description="本轮暂无可展示的流程步骤" :image-size="80" />
-        <section v-if="retrieval" class="trace-retrieval"><h3>检索与重排</h3><p class="trace-hint">向量召回 {{ retrieval.vector?.length ?? 0 }} 条 · 关键词召回 {{ retrieval.lexical?.length ?? 0 }} 条 · 重排方式 {{ retrieval.reranker || '—' }}</p>
+        <section v-if="retrieval && Object.keys(retrieval).length" class="trace-retrieval"><h3>检索与重排</h3><p class="trace-hint">向量召回 {{ retrieval.vector?.length ?? 0 }} 条 · 关键词召回 {{ retrieval.lexical?.length ?? 0 }} 条 · 重排方式 {{ retrieval.reranker || '—' }}</p>
           <el-alert v-if="retrieval.embedding_fallback" title="本轮向量服务不可用，已使用关键词召回。" type="warning" :closable="false" />
           <el-table :data="retrieval.ranked || []" max-height="320"><el-table-column prop="document_title" label="资料名称" min-width="200" /><el-table-column label="向量相似度" width="130"><template #default="{ row }">{{ row.score == null ? '—' : Number(row.score).toFixed(4) }}</template></el-table-column><el-table-column label="重排得分" width="120"><template #default="{ row }">{{ row.rerank_score == null ? '—' : Number(row.rerank_score).toFixed(4) }}</template></el-table-column><el-table-column label="状态" width="180"><template #default="{ row }"><el-tag v-if="retrieval.selected?.includes(row.chunk_id)" size="small">用于回答</el-tag><el-tag v-if="row.rerank_fallback" size="small" type="warning">重排降级</el-tag></template></el-table-column></el-table>
         </section>
