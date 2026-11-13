@@ -7,8 +7,8 @@ from flask import current_app
 from ...core.extensions import db
 from ...entities import QAConversation, QALog, now
 from ...integrations.ai.chat_adapter import ChatError, ChatFormatError, complete_json
-from ...integrations.ai.schemas import ResolvedQuestion, Summary
-from ..prompts.registry import get_prompt, robot_prompt
+from ...integrations.ai.schemas import Summary
+from ..prompts.registry import get_prompt
 from .service import COMPLETED
 
 
@@ -146,18 +146,15 @@ def prepare_context(cid, before_turn, *, turn_id=None, lease_token=None):
 def resolve_question(question, context, *, robot=False):
     if not context.get("turns") and not context.get("summary"):
         return {"resolved_question": question, "clarification": None}
+    from ...integrations.ai.schemas import ConversationPlan
+    from ..prompts.registry import effective_prompt
     payload, _ = complete_json(
-        robot_prompt("resolve_robot") if robot else get_prompt("resolve_web"),
-        {"question": question, "history": context},
-        timeout_seconds=35,
-        schema=ResolvedQuestion,
+        effective_prompt("conversation_plan", robot=False, evidence=("knowledge",)),
+        {"question": question, "history": context, "channel": "web", "tool_capabilities": {"tools": []}},
+        timeout_seconds=35, schema=ConversationPlan,
     )
-    clarification = payload.get("clarification")
-    if clarification is not None:
-        if not isinstance(clarification, str) or not 1 <= len(clarification.strip()) <= 500:
-            raise ChatFormatError("追问澄清格式不正确")
-        return {"resolved_question": question, "clarification": clarification.strip()}
-    resolved = payload.get("resolved_question")
-    if not isinstance(resolved, str) or not 1 <= len(resolved.strip()) <= 4000:
-        raise ChatFormatError("追问理解失败，请补充具体问题后重试")
-    return {"resolved_question": resolved.strip(), "clarification": None}
+    decision = ConversationPlan.model_validate(payload)
+    if decision.intent not in {"knowledge", "clarification"} or decision.tool_requests:
+        raise ChatFormatError("知识检索理解不能请求工具")
+    return {"resolved_question": decision.resolved_question,
+            "clarification": decision.direct_answer if decision.intent == "clarification" else None}

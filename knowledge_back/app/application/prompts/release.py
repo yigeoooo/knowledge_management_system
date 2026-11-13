@@ -15,14 +15,8 @@ def quality_reasons(run):
     reasons = []
     if run.status != "COMPLETED":
         reasons.append("评测尚未成功完成")
-    if snapshot.get("scope") == "single":
-        reasons.append("单题测试仅用于调试，请使用评测集全部已启用题目完成发布验收")
-    elif (
-        snapshot.get("reviewed_only") is not True
-        or not examples
-        or any(not e.get("reviewed_by") or not e.get("reviewed_at") for e in examples)
-    ):
-        reasons.append("草稿试测不能用于发布，请使用已启用的测试题重新评测")
+    if not examples or any(not e.get("reviewed_by") or not e.get("reviewed_at") for e in examples):
+        reasons.append("发布前请对本次选中的测试题完成审核")
     if (
         not examples
         or len(results) != len(examples)
@@ -38,7 +32,7 @@ def quality_reasons(run):
     return reasons
 
 
-def release_reasons(version, run, current, *, lock_examples=False, dataset_id=None):
+def release_reasons(version, run, current, *, lock_examples=False, dataset_id=None, bundle=False):
     reasons = quality_reasons(run)
     snapshot = run.snapshot
     query = db.select(EvaluationDataset).where(EvaluationDataset.id == run.dataset_id)
@@ -52,22 +46,17 @@ def release_reasons(version, run, current, *, lock_examples=False, dataset_id=No
         reasons.append("实验不属于所选知识库当前的唯一评测集，请重新评测")
     if snapshot.get("candidate", {}).get(version.prompt_key) != version_data(version):
         reasons.append("该实验未测试所选提示词版本")
-    if version.prompt_key not in snapshot.get("covered_prompt_keys", []):
-        reasons.append("测试题未覆盖此提示词用途")
-    usages = [r.get("candidate", {}).get("outputs", {}).get("used_prompt_keys") for r in run.results]
-    if any(usage is not None for usage in usages) and not any(
-        version.prompt_key in (usage or []) for usage in usages
-    ):
-        reasons.append("候选答案未实际执行此提示词，请添加对应回答类型的测试题后重新评测")
     if version.prompt_key == "robot_interaction" and any(
         r.get("candidate", {}).get("outputs", {}).get("routing_fallback") for r in run.results
     ):
         reasons.append("候选交流分流出现异常回退，请修复后重新评测")
-    expected = {**current, version.prompt_key: version_data(version)}
-    if snapshot.get("candidate") != expected:
-        reasons.append(
-            "试测组合与待发布组合不同；请只修改本用途，保持其他用途为当前发布版本后重新评测"
-        )
+    # A run may contain several changed prompts. Validate that the selected
+    # version is the one tested and that every other candidate remains current.
+    candidate = snapshot.get("candidate", {})
+    for key, tested in candidate.items():
+        if not bundle and key != version.prompt_key and tested != current.get(key):
+            reasons.append("本次实验包含多个候选提示词，请使用整套候选版本发布")
+            break
     if snapshot.get("baseline") != current:
         reasons.append("当前发布版本已变化，请以当前版本重新对比评测")
     base = db.session.get(KnowledgeBase, UUID(snapshot["knowledge_base_id"]))
@@ -87,8 +76,8 @@ def release_reasons(version, run, current, *, lock_examples=False, dataset_id=No
     )
     rows = db.session.scalars(query.with_for_update() if lock_examples else query).all()
     actual = {str(e.id): e for e in rows}
-    if set(actual) != {e["id"] for e in examples}:
-        reasons.append("评测集的已启用题目范围已变化，请使用当前全部已启用题目重新评测")
+    if not set(e["id"] for e in examples).issubset(actual):
+        reasons.append("本次评测选中的测试题已删除或不属于当前评测集")
     if any(
         e["id"] not in actual
         or actual[e["id"]].revision != e["revision"]

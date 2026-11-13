@@ -36,6 +36,9 @@ def classify_interaction(question, context, base_id):
             )
         else:
             answer = None
+        if decision.kind == "realtime":
+            from ..robots.identity import fallback_text
+            answer = fallback_text(answer)
         return {"kind": decision.kind, "answer": answer, "model": model}
     except (ChatError, ValidationError) as error:
         current_app.logger.warning("robot interaction routing failed; using knowledge retrieval type=%s",

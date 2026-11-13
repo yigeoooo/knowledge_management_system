@@ -726,3 +726,42 @@ for (const scope of ['single', 'dataset']) {
     await page.screenshot({ path: `/tmp/kbs-evaluation-history-${scope}.png`, animations: 'disabled' })
   })
 }
+
+test('consolidated prompt edits sections without exposing JSON', async ({ page }) => {
+  const plan = { ...prompt, key: 'conversation_plan', name: '对话理解与调度', active_version: 0 }
+  const version = { ...original, content: JSON.stringify({ format: 'kbs-prompt-sections-v1', sections: { common: '只根据本会话理解问题，禁止猜测业务数据。', robot: '直接交流保持简洁。', realtime: '实时查询不反问。' } }) }
+  let saved: any
+  await page.route('**/api/v1/prompts', route => route.fulfill({ json: { code: 0, data: { items: [plan] } } }))
+  await page.route('**/prompts/conversation_plan', route => route.fulfill({ json: { code: 0, data: { ...plan, versions: [version] } } }))
+  await page.route('**/prompts/conversation_plan/versions', route => {
+    saved = route.request().postDataJSON()
+    return route.fulfill({ json: { code: 0, data: { ...version, id: 'v2', content: saved.content } } })
+  })
+  await page.goto('/prompts')
+  await expect(page.getByText('对话与表达', { exact: true })).toBeVisible()
+  const realtime = page.locator('.el-form-item').filter({ hasText: '实时工具规则' }).locator('textarea')
+  await expect(realtime).toHaveValue('实时查询不反问。')
+  await realtime.fill('实时查询不反问，必须核对日期和地点。')
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click()
+  await expect.poll(() => saved?.content).toBeTruthy()
+  expect(JSON.parse(saved.content).sections.realtime).toContain('核对日期和地点')
+})
+
+test('prompt management shows only seven purposes without a legacy toggle', async ({ page }) => {
+  const keys = ['robot_persona', 'conversation_plan', 'answer_generate', 'review_answer', 'summarize', 'suggest_questions', 'review_suggestions', 'answer_web', 'answer_robot', 'resolve_web', 'resolve_robot', 'robot_interaction']
+  const items = keys.map(key => ({ ...prompt, key, name: key, active_version: ['conversation_plan', 'answer_generate'].includes(key) ? 0 : 1 }))
+  await page.route('**/api/v1/prompts*', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/v1/prompts') return route.fulfill({ json: { code: 0, data: { items } } })
+    return route.fallback()
+  })
+  for (const item of items) await page.route(`**/prompts/${item.key}`, route => route.fulfill({ json: { code: 0, data: { ...item, versions: [original] } } }))
+  await page.goto('/prompts?prompt=robot_interaction')
+  const aside = page.getByRole('complementary', { name: '提示词用途' })
+  await expect(aside.locator('button')).toHaveCount(7)
+  await expect(page.getByRole('button', { name: '准备7用途迁移候选' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '迁移流程对比与验收' })).toHaveCount(0)
+  await expect(aside).not.toContainText('当前发布 v0')
+  await expect(aside.locator('button.active')).toHaveCount(1)
+  await expect(page.getByRole('checkbox', { name: '显示历史用途' })).toHaveCount(0)
+})

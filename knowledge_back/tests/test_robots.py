@@ -101,3 +101,18 @@ def test_non_admin_cannot_manage_robots(app, client):
     assert client.post(
         "/api/v1/robots", headers=headers, json={"serial_no": "ROBOT-X"}
     ).status_code == 403
+
+
+def test_location_and_timezone_options(client, monkeypatch):
+    from app.application.realtime import service
+    headers = login(client)
+    monkeypatch.setattr(service, '_get', lambda *args: {'location': [
+        {'id': '101271101', 'country': '中国', 'adm1': '四川省', 'adm2': '宜宾市', 'name': '宜宾', 'tz': 'Asia/Shanghai'}]})
+    result = client.get('/api/v1/robots/location-options?q=宜宾', headers=headers)
+    assert result.status_code == 200
+    place = result.json['data']['items'][0]
+    assert place['value'] == '101271101' and place['timezone'] == 'Asia/Shanghai'
+    assert '四川省' in place['label']
+    zones = client.get('/api/v1/robots/timezone-options', headers=headers)
+    assert zones.json['data']['items'][0] == 'Asia/Shanghai'
+    assert client.get('/api/v1/robots/location-options?q=宜宾').status_code == 401

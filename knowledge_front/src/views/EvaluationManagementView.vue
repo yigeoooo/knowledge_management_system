@@ -16,6 +16,7 @@ const tab = ref('examples'), error = ref(''), loading = ref(false), saving = ref
 const runScope = ref<'dataset' | 'single'>('dataset'), runsLoading = ref(false)
 const newDataset = ref(false), editor = ref(false), editing = ref<Example | null>(null), singleExample = ref<Example | null>(null)
 const datasetForm = reactive({ name: '', knowledge_base_id: '', description: '' })
+const comparisonPrompts = computed(() => prompts.value)
 const runName = ref(''), reviewedOnly = ref(true), overrides = reactive<Record<string, string>>({})
 const dataset = computed(() => datasets.value.find(d => d.id === datasetId.value))
 const availableBases = computed(() => bases.value.filter(b => !b.dataset_id && !datasets.value.some(d => d.knowledge_base_id === b.id)))
@@ -62,6 +63,11 @@ async function initialize() {
     const details = await Promise.all(promptList.items.map(p => api<Prompt>(`/prompts/${p.key}`)))
     if (disposed) return
     prompts.value = details
+    // Candidate defaults to the newest saved version, including an unpublished draft.
+    for (const prompt of details) {
+      const newest = [...(prompt.versions || [])].sort((a, b) => b.version - a.version)[0]
+      if (newest && newest.version !== prompt.active_version) overrides[prompt.key] = newest.id
+    }
     if (!datasetId.value) datasetId.value = datasets.value.find(d => d.id === route.query.dataset)?.id || datasets.value[0]?.id || ''
     datasetForm.knowledge_base_id = availableBases.value[0]?.id || ''
     if (typeof route.query.prompt === 'string' && typeof route.query.version === 'string') {
@@ -99,7 +105,7 @@ async function remove(row: Example) {
 async function start() {
   saving.value = true
   try {
-    const candidate = Object.fromEntries(Object.entries(overrides).filter(([, v]) => v))
+    const candidate = Object.fromEntries(Object.entries(overrides).filter(([k, v]) => v && comparisonPrompts.value.some(p => p.key === k)))
     const run = await api<Run>('/evaluations/runs', { method: 'POST', body: JSON.stringify({ dataset_id: datasetId.value, name: runName.value || `${dataset.value?.name} · ${new Date().toLocaleString('zh-CN')}`, reviewed_only: reviewedOnly.value, overrides: candidate }) })
     runScope.value = 'dataset'; await loadRuns(); tab.value = 'runs'; await showRun(run.id); ElMessage.success('评测已开始，离开页面后后台仍会继续')
   } catch (e) { fail(e) } finally { saving.value = false }
@@ -122,7 +128,7 @@ onBeforeUnmount(() => { disposed = true; controller.abort(); ++exampleSequence; 
   <el-alert v-if="error" :title="error" type="error" :closable="false" />
   <el-card shadow="never" class="resource-card"><div class="dataset-bar"><div><span>当前评测集</span><el-select v-model="datasetId" placeholder="选择评测集" filterable><el-option v-for="d in datasets" :key="d.id" :label="d.name" :value="d.id" /></el-select></div><div class="dataset-counts"><strong>{{ examples.length }}</strong> 题 <span>/</span> <strong>{{ reviewedCount }}</strong> 已启用</div></div><p v-if="dataset?.knowledge_base_name" class="dataset-description">所属知识库：{{ dataset.knowledge_base_name }} · 唯一评测集</p><p v-if="dataset?.description" class="dataset-description">{{ dataset.description }}</p>
     <el-tabs v-model="tab"><el-tab-pane label="测试题与人工标注" name="examples"><div class="tab-toolbar"><p>对照知识库资料出题，保存并启用后即可用于正式评测；未完成的题目可保存草稿。</p><el-button :disabled="!datasetId || saving" @click="edit()">添加测试题</el-button></div><el-table v-loading="loading" :data="examples"><el-table-column prop="name" label="样本" min-width="150" /><el-table-column prop="inputs.question" label="问题" min-width="260" show-overflow-tooltip /><el-table-column label="渠道" width="95"><template #default="{ row }">{{ row.inputs.robot ? '机器人' : '网页' }}</template></el-table-column><el-table-column label="题目状态" width="110"><template #default="{ row }"><el-tag :type="row.status === 'enabled' ? 'success' : 'warning'">{{ row.status === 'enabled' ? '已启用' : '草稿' }}</el-tag></template></el-table-column><el-table-column label="操作" width="290"><template #default="{ row }"><el-button link type="primary" :disabled="saving" @click="edit(row)">查看 / 编辑</el-button><el-button link type="primary" :disabled="saving" @click="singleExample = row">单题测试</el-button><el-button link type="danger" :disabled="saving" @click="remove(row)">删除</el-button></template></el-table-column><template #empty><el-empty description="添加真实问题，填写依据和预期答案" :image-size="70" /></template></el-table></el-tab-pane>
-      <el-tab-pane label="发起版本对比" name="compare"><el-alert title="用于发布时，请一次只调整一个提示词用途，并使用本集全部已启用题目；题目范围变化后需重测，完成后还需逐题人工复核。多用途组合可用于探索试测。" type="info" show-icon :closable="false" /><el-form label-position="top" class="experiment-form"><el-form-item label="实验名称"><el-input v-model="runName" maxlength="200" placeholder="例如：机器人回答精简 · 第一轮对比" /></el-form-item><el-form-item label="样本范围"><el-switch v-model="reviewedOnly" active-text="只使用已启用测试题" inactive-text="包含草稿，结果仅供试测" /></el-form-item><p class="help-text">基线使用发起实验时的发布版本；下方选择的版本用于右侧候选，也可选择历史版本进行对比。</p><el-table :data="prompts"><el-table-column prop="name" label="提示词用途" width="180" /><el-table-column label="基线" width="140"><template #default="{ row }">当前发布 v{{ row.active_version }}</template></el-table-column><el-table-column label="候选版本（不选则与基线相同）" min-width="250"><template #default="{ row }"><el-select v-model="overrides[row.key]" clearable placeholder="保持当前发布版本"><el-option v-for="v in row.versions" :key="v.id" :value="v.id" :label="`v${v.version} · ${v.note || '无修改说明'}`" /></el-select></template></el-table-column></el-table><div class="start-actions"><span>{{ reviewedOnly ? reviewedCount : examples.length }} 题 × 2 组回答</span><el-button type="primary" :loading="saving" :disabled="!datasetId || !(reviewedOnly ? reviewedCount : examples.length)" @click="start">开始对比评测</el-button></div></el-form></el-tab-pane>
+      <el-tab-pane label="发起版本对比" name="compare"><el-alert title="按当前选中的题目进行评测；未被题目涉及的用途不会执行，也不会阻止开始测试。默认使用最新保存版本，有未发布草稿时优先使用草稿。" type="info" show-icon :closable="false" /><el-form label-position="top" class="experiment-form"><el-form-item label="实验名称"><el-input v-model="runName" maxlength="200" placeholder="例如：机器人回答精简 · 第一轮对比" /></el-form-item><el-form-item label="样本范围"><el-switch v-model="reviewedOnly" active-text="只使用已启用测试题" inactive-text="包含草稿，结果仅供试测" /></el-form-item><p class="help-text">基线使用发起实验时的发布版本；下方选择的版本用于右侧候选，也可选择历史版本进行对比。</p><el-table :data="comparisonPrompts"><el-table-column prop="name" label="提示词用途" width="180" /><el-table-column label="基线" width="140"><template #default="{ row }">当前发布 v{{ row.active_version }}</template></el-table-column><el-table-column label="候选版本（不选则与基线相同）" min-width="250"><template #default="{ row }"><el-select v-model="overrides[row.key]" clearable placeholder="保持当前发布版本"><el-option v-for="v in row.versions" :key="v.id" :value="v.id" :label="`v${v.version} · ${v.note || '无修改说明'}`" /></el-select></template></el-table-column></el-table><div class="start-actions"><span>{{ reviewedOnly ? reviewedCount : examples.length }} 题 × 2 组回答</span><el-button type="primary" :loading="saving" :disabled="!datasetId || !(reviewedOnly ? reviewedCount : examples.length)" @click="start">开始对比评测</el-button></div></el-form></el-tab-pane>
       <el-tab-pane label="实验记录" name="runs">
         <div class="tab-toolbar record-toolbar">
           <el-radio-group v-model="runScope" aria-label="实验记录类型">
@@ -149,7 +155,7 @@ onBeforeUnmount(() => { disposed = true; controller.abort(); ++exampleSequence; 
   </el-card>
   <el-dialog v-model="newDataset" title="新建评测集" width="min(560px, 92vw)" align-center><el-form label-position="top"><el-form-item label="名称"><el-input v-model="datasetForm.name" maxlength="200" /></el-form-item><el-form-item label="知识库"><el-select v-model="datasetForm.knowledge_base_id" aria-label="创建评测集的知识库"><el-option v-for="b in bases" :key="b.id" :value="b.id" :label="b.name" :disabled="!!b.dataset_id || datasets.some(d => d.knowledge_base_id === b.id)">{{ b.name }}{{ b.dataset_id || datasets.some(d => d.knowledge_base_id === b.id) ? ' · 已有评测集' : '' }}</el-option></el-select></el-form-item><el-form-item label="用途说明"><el-input v-model="datasetForm.description" type="textarea" :rows="3" maxlength="2000" /></el-form-item></el-form><template #footer><el-button @click="newDataset = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="!datasetForm.name.trim() || !availableBases.some(b => b.id === datasetForm.knowledge_base_id)" @click="createDataset">创建</el-button></template></el-dialog>
   <EvaluationExampleDialog :open="editor" :dataset="dataset" :example="editing" @close="editor = false" @saved="savedExample" />
-  <EvaluationSingleRunDialog :example="singleExample" :dataset="dataset || null" :prompts="prompts" :initial-overrides="overrides" @close="singleExample = null" @started="singleStarted" />
+  <EvaluationSingleRunDialog :example="singleExample" :dataset="dataset || null" :prompts="comparisonPrompts" :initial-overrides="overrides" @close="singleExample = null" @started="singleStarted" />
   <EvaluationRunDialog :run="activeRun" @close="closeRun" @updated="updatedRun" />
 </template>
 <style scoped>

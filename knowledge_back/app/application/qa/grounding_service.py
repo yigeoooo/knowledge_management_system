@@ -9,7 +9,13 @@ from ...integrations.ai.chat_adapter import ChatFormatError, complete_json
 from ...integrations.ai.schemas import AnswerDraft, Review, SuggestionReview, Suggestions
 from ...processors.answer_text import robot_answer_text
 from ...processors.markdown import markdown_blocks
-from ..prompts.registry import bootstrap_content, get_prompt, robot_prompt, with_prompts
+from ..prompts.registry import (
+    bootstrap_content,
+    effective_prompt,
+    get_prompt,
+    robot_prompt,
+    with_prompts,
+)
 
 logger = logging.getLogger(__name__)
 NO_EVIDENCE = "当前资料不足以回答这个问题。可以补充具体主题，或查看相关资料后继续提问。"
@@ -17,8 +23,8 @@ PARTIAL_NOTICE = "以上是资料中可以确认的部分，其余内容暂未�
 FORMAT_NOTICE = "暂未能整理出可核实的回答，已为你列出相关资料，可以先查看原文或换一种问法。"
 ROBOT_NO_EVIDENCE = "这个问题小维还没有找到可靠资料，暂时不能确定。"
 ROBOT_FORMAT_NOTICE = "小维暂时没能整理出可靠的回答，你可以换个问法再试试。"
-ANSWER_PROMPT = bootstrap_content("answer_web")
-ROBOT_ANSWER_PROMPT = bootstrap_content("answer_robot")
+ANSWER_PROMPT = "answer_generate:web"
+ROBOT_ANSWER_PROMPT = "answer_generate:robot"
 REVIEW_PROMPT = bootstrap_content("review_answer")
 SUGGEST_PROMPT = bootstrap_content("suggest_questions")
 SUGGEST_REVIEW_PROMPT = bootstrap_content("review_suggestions")
@@ -136,8 +142,16 @@ def _call(prompt, material, deadline, *, max_tokens=4096):
     key = {ANSWER_PROMPT: "answer_web", ROBOT_ANSWER_PROMPT: "answer_robot",
            REVIEW_PROMPT: "review_answer", SUGGEST_PROMPT: "suggest_questions",
            SUGGEST_REVIEW_PROMPT: "review_suggestions"}[prompt]
+    instruction = None
+    if key in {"answer_web", "answer_robot", "review_answer"}:
+        scope = material.get("scope", {})
+        instruction = effective_prompt(
+            "answer_generate" if key.startswith("answer_") else key,
+            robot=key == "answer_robot" or scope.get("robot", False),
+            evidence=tuple(scope.get("evidence_types", ["knowledge"])),
+        )
     return complete_json(
-        robot_prompt(key) if key == "answer_robot" else get_prompt(key),
+        instruction or (robot_prompt(key) if key == "answer_robot" else get_prompt(key)),
         material, max_tokens=max_tokens, timeout_seconds=deadline - monotonic(),
         schema={ANSWER_PROMPT: AnswerDraft, ROBOT_ANSWER_PROMPT: AnswerDraft,
                 REVIEW_PROMPT: Review, SUGGEST_PROMPT: Suggestions,
@@ -154,7 +168,8 @@ def _render(blocks, passages, context, partial, model, *, robot=False):
     for block in blocks:
         ids = list(dict.fromkeys(passages[key]["source_id"] for key in block["evidence_ids"]))
         used.update(ids)
-        rendered.append(block["text"] + "\n\n" + " ".join(f"[{key}]" for key in ids))
+        citations = " ".join(f"[{key}]" for key in ids if not key.startswith("tool-"))
+        rendered.append(block["text"] + ("\n\n" + citations if citations else ""))
     if partial:
         rendered.append("其余内容暂无充分依据。" if robot else PARTIAL_NOTICE)
     return (
@@ -259,6 +274,9 @@ def _finalize_answer(state):
     else:
         result = (ROBOT_FORMAT_NOTICE if robot else FORMAT_NOTICE,
                   _related(state["context"]), model, "SOURCES_ONLY")
+    if robot and not state["supported"]:
+        from ..robots.identity import fallback_text
+        result = (fallback_text(result[0]), *result[1:])
     return {"output": result}
 
 

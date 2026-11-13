@@ -3,7 +3,6 @@
 from uuid import UUID
 
 from flask import Blueprint, g, request
-from sqlalchemy import func
 
 from ...application.prompts.registry import published_snapshot, version_data
 from ...application.prompts.release import release_check, release_reasons
@@ -23,12 +22,21 @@ def template(key, lock=False):
     return row
 
 
+def is_draft(version, current):
+    if version.version == 1 or version.version == current.active_version:
+        return False
+    return db.session.scalar(db.select(AuditLog.id).where(
+        AuditLog.action == "prompt.publish", AuditLog.resource_id == version.id
+    ).limit(1)) is None
+
+
 def serialize(row):
     return {
         "key": row.key,
         "name": row.name,
         "active_version": row.active_version,
         "generation": row.generation,
+        "archived": row.archived,
         "updated_at": row.updated_at.isoformat(),
     }
 
@@ -40,7 +48,7 @@ def list_prompts():
         {
             "items": [
                 serialize(p)
-                for p in db.session.scalars(db.select(PromptTemplate).order_by(PromptTemplate.key))
+                for p in db.session.scalars(db.select(PromptTemplate).where(PromptTemplate.archived.is_(False) if request.args.get("include_archived") != "1" else True).order_by(PromptTemplate.key))
             ]
         }
     )
@@ -62,6 +70,7 @@ def detail(key):
                 {
                     **version_data(v),
                     "note": v.note,
+                    "is_draft": is_draft(v, row),
                     "created_at": v.created_at.isoformat(),
                     "created_by": str(v.created_by) if v.created_by else None,
                 }
@@ -74,7 +83,9 @@ def detail(key):
 @prompts.post("/<key>/versions")
 @page_required("/prompts")
 def save_version(key):
-    template(key, lock=True)
+    row_template = template(key, lock=True)
+    if row_template.archived:
+        raise ApiError("历史用途仅供查看", 409)
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         raise ApiError("请求体必须是 JSON 对象", 422)
@@ -83,17 +94,50 @@ def save_version(key):
         raise ApiError("提示词正文需为 20–20000 字，不能含空字符", 422)
     if not isinstance(note, str) or len(note) > 1000 or "\x00" in note:
         raise ApiError("修改说明不能超过 1000 字或含空字符", 422)
+    import json
+
+    from ...application.prompts.composition import compile_prompt
+    if key in {"conversation_plan", "answer_generate"}:
+        try:
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict) or parsed.get("format") != "kbs-prompt-sections-v1":
+                raise ValueError()
+        except ValueError:
+            raise ApiError("新用途必须使用结构化分区编辑", 422) from None
+    try:
+        compile_prompt(content, channel="robot", evidence=("knowledge", "realtime"))
+    except ValueError as error:
+        raise ApiError(str(error), 422) from None
     latest = db.session.scalar(
-        db.select(func.max(PromptVersion.version)).where(PromptVersion.prompt_key == key)
+        db.select(PromptVersion).where(PromptVersion.prompt_key == key)
+        .order_by(PromptVersion.version.desc()).with_for_update()
     )
-    row = PromptVersion(
-        prompt_key=key,
-        version=(latest or 0) + 1,
-        content=content.strip(),
-        note=note.strip(),
-        created_by=g.user.id,
-    )
-    db.session.add(row)
+    selected = None
+    if data.get("base_version_id"):
+        try:
+            selected = db.session.get(PromptVersion, UUID(data["base_version_id"]))
+        except (ValueError, TypeError):
+            raise ApiError("版本 ID 不正确", 422) from None
+        if selected is None or selected.prompt_key != key:
+            raise ApiError("提示词版本不存在", 404)
+    # Always target the single latest unpublished draft. A stale or omitted
+    # selection must never create another draft number.
+    if latest is not None and is_draft(latest, row_template):
+        if selected is None:
+            selected = latest
+        elif selected.id != latest.id:
+            raise ApiError("请刷新后编辑当前草稿", 409)
+    updating = selected is not None and is_draft(selected, row_template)
+    if updating:
+        if data.get("expected_sha256") != version_data(selected)["sha256"] or data.get("expected_note") != selected.note:
+            raise ApiError("草稿已被修改，请刷新后重试", 409)
+        row = selected
+        row.content = content.strip()
+        row.note = note.strip()
+    else:
+        row = PromptVersion(prompt_key=key, version=(latest.version if latest else 0) + 1,
+                            content=content.strip(), note=note.strip(), created_by=g.user.id)
+        db.session.add(row)
     db.session.flush()
     db.session.add(
         AuditLog(
@@ -101,11 +145,11 @@ def save_version(key):
             action="prompt.save",
             resource_type="prompt_version",
             resource_id=row.id,
-            detail={"key": key, "version": row.version},
+            detail={"key": key, "version": row.version, "updated_draft": updating},
         )
     )
     db.session.commit()
-    return success(version_data(row)), 201
+    return success(version_data(row)), 200 if updating else 201
 
 
 @prompts.get("/<key>/versions/<int:number>/release-check")
@@ -189,3 +233,61 @@ def publish(key):
     )
     db.session.commit()
     return success(serialize(row))
+
+@prompts.post("/publish-bundle")
+@page_required("/prompts")
+def publish_bundle():
+    data = request.get_json(silent=True) or {}
+    try:
+        run_id = UUID(str(data.get("evaluation_run_id")))
+    except (ValueError, TypeError):
+        raise ApiError("发布前必须选择已通过质量评测的实验", 409) from None
+    db.session.scalars(db.select(PromptTemplate).order_by(PromptTemplate.key).with_for_update()).all()
+    run = db.session.scalar(db.select(EvaluationRun).where(EvaluationRun.id == run_id).with_for_update())
+    if not run:
+        raise ApiError("评测实验不存在", 404)
+    versions = bundle_versions(run, lock=True)
+    for version in versions:
+        row = template(version.prompt_key, lock=True)
+        db.session.add(AuditLog(user_id=g.user.id, action="prompt.publish",
+            resource_type="prompt_version", resource_id=version.id,
+            detail={"key": version.prompt_key, "before": row.active_version,
+                    "after": version.version, "evaluation_run_id": str(run.id), "bundle": True}))
+        row.active_version = version.version
+        row.generation += 1
+    db.session.commit()
+    return success({"published": [v.prompt_key for v in versions]})
+
+
+def bundle_versions(run, *, lock=False):
+    candidate = run.snapshot.get("candidate", {})
+    current = published_snapshot()
+    if set(candidate) != set(current):
+        raise ApiError("实验提示词组合不完整，请重新评测", 409)
+    versions = []
+    for key, item in candidate.items():
+        if item == current.get(key):
+            continue
+        version = db.session.scalar(db.select(PromptVersion).where(PromptVersion.id == UUID(item["id"])))
+        if not version:
+            raise ApiError("候选提示词版本不存在", 404)
+        reasons = release_reasons(version, run, current, lock_examples=lock, dataset_id=run.dataset_id, bundle=True)
+        if reasons:
+            raise ApiError("不能发布：" + "；".join(reasons), 409)
+        versions.append(version)
+    if not versions:
+        raise ApiError("本次实验没有需要发布的提示词修改", 409)
+    return versions
+
+
+@prompts.get("/bundle-release-check/<uuid:run_id>")
+@page_required("/prompts")
+def bundle_release_check(run_id):
+    run = db.session.get(EvaluationRun, run_id)
+    if run is None:
+        raise ApiError("评测实验不存在", 404)
+    try:
+        versions = bundle_versions(run)
+    except ApiError as error:
+        return success({"eligible": False, "reasons": [str(error)]})
+    return success({"eligible": True, "keys": [v.prompt_key for v in versions], "reasons": []})

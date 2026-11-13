@@ -19,7 +19,21 @@ const example = computed(() => props.run?.snapshot?.examples.find(e => e.id === 
 const hasHistory = computed(() => { const context = example.value?.inputs.context; return !!context?.summary || (Array.isArray(context?.turns) && context.turns.length > 0) })
 const metricRows = computed(() => Object.keys(props.run?.summary.baseline.metrics || {}).map(key => ({ key, name: metricNames[key] || key, baseline: props.run?.summary.baseline.metrics[key], candidate: props.run?.summary.candidate.metrics[key], delta: props.run?.summary.delta[key] })))
 const releaseTarget = computed(() => Object.entries(props.run?.snapshot?.candidate || {}).find(([key, value]) => value.id !== props.run?.snapshot?.baseline[key]?.id))
+
 const finished = computed(() => props.run && ['COMPLETED', 'FAILED'].includes(props.run.status))
+const canPublishBundle = ref(false), publishing = ref(false)
+let releaseSequence = 0
+async function checkBundle() {
+  const sequence = ++releaseSequence
+  canPublishBundle.value = false
+  const id = props.run?.id
+  if (!id || props.run?.status !== 'COMPLETED') return
+  try {
+    const result = await api<{ eligible: boolean }>(`/prompts/bundle-release-check/${id}`)
+    if (sequence === releaseSequence && props.run?.id === id) canPublishBundle.value = result.eligible
+  } catch { /* Failed or unauthorized checks never expose the release action. */ }
+}
+watch(() => props.run, checkBundle, { immediate: true, deep: true })
 watch(() => props.run?.id, () => { selectedId.value = props.run?.results?.[0]?.id || props.run?.snapshot?.examples[0]?.id || ''; retryError.value = '' }, { immediate: true })
 watch([() => props.run?.id, selectedId, () => pair.value?.id], () => Object.assign(review, {
   candidate: pair.value?.review?.candidate ?? null, note: pair.value?.review?.note || '',
@@ -41,12 +55,12 @@ const navigationExamples = computed(() => props.run?.snapshot?.examples.map(e =>
 const retryableCount = computed(() => navigationExamples.value.filter(e => e.retryable).length)
 const retryPending = computed(() => props.run?.results?.some(r => r.retry_pending?.length) && !finished.value)
 
-const promptNames: Record<string, string> = { robot_persona: '机器人身份与表达', robot_interaction: '机器人交流与分流', answer_robot: '机器人简洁回答', answer_web: '网页回答', resolve_robot: '机器人追问理解', resolve_web: '网页追问理解', review_answer: '答案证据审阅', review_suggestions: '推荐问题审阅', suggest_questions: '推荐问题', summarize: '会话摘要' }
+const promptNames: Record<string, string> = { conversation_plan: '对话理解与调度', answer_generate: '答案生成', robot_persona: '机器人身份与表达', robot_interaction: '机器人交流与分流', answer_robot: '机器人简洁回答', answer_web: '网页回答', resolve_robot: '机器人追问理解', resolve_web: '网页追问理解', review_answer: '答案证据审阅', review_suggestions: '推荐问题审阅', suggest_questions: '推荐问题', summarize: '会话摘要' }
 function promptName(key: string, version?: PromptVersion) {
   return (version && props.run?.prompt_details?.[version.id]?.name) || promptNames[key] || key
 }
-const promptRows = computed(() => Object.entries(props.run?.snapshot?.baseline || {}).map(([key, baseline]) => ({
-  key, name: promptName(key, baseline), baseline, candidate: props.run?.snapshot?.candidate[key],
+const promptRows = computed(() => Array.from(new Set([...Object.keys(props.run?.snapshot?.baseline || {}), ...Object.keys(props.run?.snapshot?.candidate || {})])).map(key => ({
+  key, name: promptName(key), baseline: props.run?.snapshot?.baseline[key], candidate: props.run?.snapshot?.candidate[key],
 })))
 const questionPromptKeys = computed(() => {
   const input = example.value?.inputs
@@ -84,6 +98,19 @@ function exportRun() {
   const url = URL.createObjectURL(new Blob([JSON.stringify(props.run, null, 2)], { type: 'application/json' }))
   const link = document.createElement('a'); link.href = url; link.download = `evaluation-${props.run.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+async function publishBundle() {
+  if (!canPublishBundle.value || publishing.value || !props.run) return
+  publishing.value = true
+  canPublishBundle.value = false
+  ++releaseSequence
+  const run = props.run
+  try {
+    await api('/prompts/publish-bundle', { method: 'POST', body: JSON.stringify({ evaluation_run_id: run.id, dataset_id: run.dataset_id }) })
+    ElMessage.success('本次实验中已测试的候选提示词已全部发布')
+    emit('updated', run)
+  } catch (e) { ElMessage.error((e as Error).message) }
+  finally { publishing.value = false; await checkBundle() }
+}
 </script>
 <template>
   <el-dialog :model-value="!!run" title="评测对比详情" width="min(1440px, 94vw)" top="4vh" destroy-on-close class="evaluation-dialog" @close="emit('close')">
@@ -97,14 +124,14 @@ function exportRun() {
       <EvaluationProgress :run="run" />
       <el-alert v-if="finished && run.quality_reasons?.length" class="quality-notice" :title="run.quality_reasons.join('；')" type="warning" :closable="false" />
       <el-alert v-else-if="finished && run.quality_reasons" class="quality-notice" title="候选答案已全部人工复核合格；发布时还需检查版本、测试题和运行条件是否仍匹配。" type="success" :closable="false" />
-      <el-button v-if="finished && releaseTarget && run.scope !== 'single'" link type="primary" class="quality-notice" @click="router.push({ path: '/prompts', query: { prompt: releaseTarget[0], version: releaseTarget[1].id } })">返回提示词，检查发布条件</el-button>
+      <el-button v-if="canPublishBundle" type="primary" class="quality-notice" @click="publishBundle">发布本次实验的全部候选提示词</el-button>
       <el-alert v-if="run.error_message" :title="run.error_message" type="warning" :closable="false" />
       <el-collapse><el-collapse-item title="本次固定的提示词版本" name="prompts">
         <p class="hint">基线为原实验发起时的发布版本，候选为当时选择的试测版本（可以是历史版本）；后续发布不会改变这两组快照。</p>
         <el-table :data="promptRows" size="small" class="prompt-version-table">
           <el-table-column prop="name" label="提示词用途" min-width="150" />
-          <el-table-column label="基线版本" min-width="100"><template #default="{ row }">v{{ row.baseline.version }}</template></el-table-column>
-          <el-table-column label="候选版本" min-width="160"><template #default="{ row }"><template v-if="row.candidate"><el-tag :type="row.baseline.id === row.candidate.id ? 'info' : 'primary'" size="small">v{{ row.candidate.version }}</el-tag><span class="version-relation">{{ row.baseline.id === row.candidate.id ? '与基线相同' : '所选试测版本' }}</span></template><span v-else>未记录</span></template></el-table-column>
+          <el-table-column label="基线版本" min-width="100"><template #default="{ row }">v{{ row.baseline?.version || '未使用' }}</template></el-table-column>
+          <el-table-column label="候选版本" min-width="160"><template #default="{ row }"><template v-if="row.candidate"><el-tag :type="row.baseline?.id === row.candidate.id ? 'info' : 'primary'" size="small">v{{ row.candidate.version }}</el-tag><span class="version-relation">{{ row.baseline?.id === row.candidate.id ? '与基线相同' : '所选试测版本' }}</span></template><span v-else>未记录</span></template></el-table-column>
         </el-table>
       </el-collapse-item><el-collapse-item title="汇总指标与实验条件" name="metrics"><p class="hint">共 {{ run.summary.paired_count }} 个完整成功对比；人工复核 {{ run.summary.human_reviewed_count }} 题。字面覆盖率只检查要点是否出现，语义正确性需人工复核。Δ 为同题候选减基线。</p><el-table :data="metricRows" size="small"><el-table-column prop="name" label="指标" min-width="200" /><el-table-column label="基线"><template #default="{ row }">{{ percentage(row.baseline?.value) }} · {{ row.baseline?.count || 0 }} 题</template></el-table-column><el-table-column label="候选"><template #default="{ row }">{{ percentage(row.candidate?.value) }} · {{ row.candidate?.count || 0 }} 题</template></el-table-column><el-table-column label="Δ 同题差值"><template #default="{ row }"><span :class="row.delta > 0 ? 'positive' : row.delta < 0 ? 'negative' : ''">{{ row.delta > 0 ? '+' : '' }}{{ percentage(row.delta) }}</span></template></el-table-column></el-table><p>本题对比结果合格率：{{ percentage(run.summary.human.candidate) }}（按已人工确认的题目计算）</p><div class="snapshot-info"><span>测试集指纹 {{ run.snapshot?.dataset_hash }}</span><span>运行条件指纹 {{ run.snapshot?.environment_hash }}</span></div><details><summary>查看固定的提示词版本和运行配置</summary><pre>{{ JSON.stringify({ baseline: Object.fromEntries(Object.entries(run.snapshot?.baseline || {}).map(([key, p]) => [key, { version: p.version, sha256: p.sha256 }])), candidate: Object.fromEntries(Object.entries(run.snapshot?.candidate || {}).map(([key, p]) => [key, { version: p.version, sha256: p.sha256 }])), environment: run.snapshot?.environment }, null, 2) }}</pre></details></el-collapse-item></el-collapse>
       <div class="comparison-workspace">
@@ -122,7 +149,7 @@ function exportRun() {
               <div v-for="version in armPrompts(arm)" :key="version.key" class="answer-prompt-version"><el-tag size="small" :type="arm === 'candidate' && version.id !== run.snapshot?.baseline[version.key]?.id ? 'primary' : 'info'">{{ version.name }} · v{{ version.version }}</el-tag><span v-if="version.note">{{ version.note }}</span></div>
               <details v-if="armPrompts(arm).length"><summary>查看本题提示词正文</summary><div v-for="version in armPrompts(arm)" :key="version.key"><strong>{{ version.name }} · v{{ version.version }}</strong><pre>{{ version.content }}</pre></div></details>
             </div>
-            <el-alert v-if="pair.retry_pending?.includes(arm) && !finished" title="此版本正在等待重测结果…" type="info" :closable="false" /><template v-else-if="pair[arm].error"><el-alert :title="`执行失败：${pair[arm].error_message || pair[arm].error}`" type="error" :closable="false" /><small v-if="pair[arm].outputs.run_id" class="error-trace">LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></template><template v-else><el-alert v-if="pair[arm].outputs.routing_fallback" title="本题交流分流异常，已回退知识库流程，请重测确认分流效果。" type="warning" :closable="false" /><el-tag v-if="pair[arm].outputs.answer_kind" size="small" class="answer-kind">{{ answerKindNames[pair[arm].outputs.answer_kind] || pair[arm].outputs.answer_kind }}</el-tag><div class="answer-meta">{{ pair[arm].outputs.status }} · {{ ((pair[arm].outputs.latency_ms || 0) / 1000).toFixed(1) }} 秒 · 输入 {{ pair[arm].outputs.token_usage?.input_tokens ?? '—' }} / 输出 {{ pair[arm].outputs.token_usage?.output_tokens ?? '—' }} tokens</div><div v-if="hasHistory && pair[arm].outputs.resolved_question" class="resolved-question"><strong>结合历史理解的问题</strong><p>{{ pair[arm].outputs.resolved_question }}</p></div><MarkdownContent :content="pair[arm].outputs.answer || ''" /><details><summary>查看逐题指标及引用</summary><p v-for="(value, key) in pair[arm].scores" :key="key">{{ metricNames[key] || key }}：{{ percentage(value) }}</p><p>召回文档：{{ pair[arm].outputs.retrieved_documents?.join('、') || '无' }}</p><p>引用文档：{{ pair[arm].outputs.cited_documents?.join('、') || '无' }}</p><small>LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></details></template></article></div>
+            <el-alert v-if="pair.retry_pending?.includes(arm) && !finished" title="此版本正在等待重测结果…" type="info" :closable="false" /><template v-else-if="pair[arm].error"><el-alert :title="`执行失败：${pair[arm].error_message || pair[arm].error}`" type="error" :closable="false" /><small v-if="pair[arm].outputs.run_id" class="error-trace">LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></template><template v-else><el-alert v-if="pair[arm].outputs.routing_fallback" title="本题交流分流异常，已回退知识库流程，请重测确认分流效果。" type="warning" :closable="false" /><el-tag v-if="pair[arm].outputs.answer_kind" size="small" class="answer-kind">{{ answerKindNames[pair[arm].outputs.answer_kind] || pair[arm].outputs.answer_kind }}</el-tag><div class="answer-meta">{{ pair[arm].outputs.status }} · {{ ((pair[arm].outputs.latency_ms || 0) / 1000).toFixed(1) }} 秒 · 输入 {{ pair[arm].outputs.token_usage?.input_tokens ?? '—' }} / 输出 {{ pair[arm].outputs.token_usage?.output_tokens ?? '—' }} tokens</div><div v-if="hasHistory && pair[arm].outputs.resolved_question" class="resolved-question"><strong>结合历史理解的问题</strong><p>{{ pair[arm].outputs.resolved_question }}</p></div><MarkdownContent :content="pair[arm].outputs.answer || ''" /><details><summary>查看逐题指标及引用</summary><p v-for="entry in pair[arm].outputs.prompt_compositions" :key="entry.key + entry.sha256">{{ promptNames[entry.key] || entry.key }}：{{ entry.sections.join('、') }} · {{ entry.sha256 }}</p><pre v-if="pair[arm].outputs.tools?.length">{{ JSON.stringify(pair[arm].outputs.tools, null, 2) }}</pre><p v-for="(value, key) in pair[arm].scores" :key="key">{{ metricNames[key] || key }}：{{ percentage(value) }}</p><p>召回文档：{{ pair[arm].outputs.retrieved_documents?.join('、') || '无' }}</p><p>引用文档：{{ pair[arm].outputs.cited_documents?.join('、') || '无' }}</p><small>LangSmith 运行编号：{{ pair[arm].outputs.run_id }}</small></details></template></article></div>
           <el-empty v-else description="这道题还没有完成评测" :image-size="60" />
           <el-form v-if="pair && finished && !pair.baseline.error && !pair.candidate.error" class="human-review" label-position="top" :disabled="retrying">
             <h4>确认本题结果</h4>

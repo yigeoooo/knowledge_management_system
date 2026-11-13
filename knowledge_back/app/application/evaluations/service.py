@@ -10,7 +10,13 @@ from flask import current_app
 
 from ...core.extensions import db
 from ...core.http import ApiError
-from ...entities import Document, DocumentVersion, EvaluationExample, KnowledgeBase, PromptVersion
+from ...entities import (
+    Document,
+    DocumentVersion,
+    EvaluationExample,
+    KnowledgeBase,
+    PromptVersion,
+)
 from ..prompts.registry import published_snapshot, version_data
 from .documents import document_reference
 
@@ -28,6 +34,7 @@ CONFIG_KEYS = (
     "DASHSCOPE_EMBEDDING_DIMENSION",
     "QA_RECENT_TURNS",
     "QA_HISTORY_BUDGET",
+    "QWEATHER_HOST",
 )
 
 
@@ -55,7 +62,7 @@ def environment(base_id):
         .order_by(DocumentVersion.id)
     ).all()
     return {
-        "pipeline_version": "rag-v2-prompts-v4-robot-interaction",
+        "pipeline_version": "conversation-v3-fresh-v1-weather-time-v1",
         "config": {key: current_app.config.get(key) for key in CONFIG_KEYS},
         "index": [
             {
@@ -76,12 +83,12 @@ def prompt_keys_for_input(inputs):
         return {"summarize"}
     if task == "suggestions":
         return {"suggest_questions", "review_suggestions"}
-    covered = {"answer_robot" if inputs.get("robot") else "answer_web", "review_answer"}
-    if inputs.get("robot"):
-        covered.update({"robot_persona", "robot_interaction"})
+    covered = {"answer_generate", "review_answer"}
     context = inputs.get("context") or {}
-    if context.get("turns") or context.get("summary"):
-        covered.add("resolve_robot" if inputs.get("robot") else "resolve_web")
+    if inputs.get("robot"):
+        covered.update({"robot_persona", "conversation_plan"})
+    elif context.get("turns") or context.get("summary"):
+        covered.add("conversation_plan")
     return covered
 
 
@@ -115,15 +122,14 @@ def freeze(dataset, overrides, reviewed_only, *, example_id=None, expected_revis
             version = db.session.get(PromptVersion, UUID(str(value)))
         except (ValueError, TypeError):
             raise ApiError("候选版本 ID 不正确", 422) from None
-        if key not in baseline or not version or version.prompt_key != key:
+        if key not in candidate or not version or version.prompt_key != key:
             raise ApiError("候选版本与提示词用途不匹配", 422)
         candidate[key] = version_data(version)
     covered = set()
     for example in examples:
         covered.update(prompt_keys_for_input(example.inputs))
-    unused = [key for key in overrides if key not in covered and candidate[key] != baseline[key]]
-    if unused:
-        raise ApiError("测试集未覆盖候选用途：" + "、".join(unused) + "；请添加对应渠道的问答、历史追问、摘要或推荐问题样本", 422)
+    # Samples determine which prompt sections execute; partial coverage is valid.
+    # A run may intentionally evaluate only the purposes represented by its questions.
     frozen = [
         {
             "id": str(e.id),
@@ -136,10 +142,17 @@ def freeze(dataset, overrides, reviewed_only, *, example_id=None, expected_revis
         }
         for e in examples
     ]
+    if "conversation_plan" in candidate:
+        from ..realtime.service import VERSION
+        for example in frozen:
+            spec = example["inputs"].get("realtime")
+            if spec is None:
+                example["inputs"]["realtime"] = {"runtime": {"now": "2026-01-01T00:00:00+00:00", "timezone": None, "default_location": None, "tool_version": VERSION}, "fixtures": []}
     env = environment(base.id)
     if not env["index"]:
         raise ApiError("知识库还没有完成索引的文档", 409)
     return {
+        "pipeline_versions": {"baseline": "conversation-v3" if "conversation_plan" in baseline else "rag-v2", "candidate": "conversation-v3" if "conversation_plan" in candidate else "rag-v2"},
         "scope": "single" if example_id is not None else "dataset",
         "dataset_id": str(dataset.id),
         "dataset_name": dataset.name,

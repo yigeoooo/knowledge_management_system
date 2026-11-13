@@ -21,6 +21,8 @@ def app(tmp_path, monkeypatch):
             "LANGCHAIN_CHAT_ENABLED": False,
             "LANGSMITH_TRACING": False,
             "QA_WORKER_AUTOSTART": False,
+            "QA_RECENT_TURNS": 6,
+            "QA_HISTORY_BUDGET": 9000,
         }
     )
     # The knowledge-base API now provisions a MinIO bucket.  Keep this

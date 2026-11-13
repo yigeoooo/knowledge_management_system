@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Literal
 
 from flask import current_app
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ...core.extensions import db
 from ...entities import KnowledgeBase
@@ -19,7 +19,44 @@ class EvaluationInput(BaseModel):
     knowledge_base_code: str
     context: dict = Field(default_factory=dict)
     robot: bool = False
+    robot_id: str | None = None
+    robot_context: dict | None = None
+    realtime: dict | None = None
     task: Literal["answer", "summary", "suggestions"] = "answer"
+
+
+    @field_validator("realtime")
+    @classmethod
+    def validate_realtime(cls, value):
+        if value is None:
+            return value
+        from datetime import datetime
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        from ...integrations.ai.schemas import ToolRequest
+        if set(value) != {"runtime", "fixtures"} or not isinstance(value["runtime"], dict):
+            raise ValueError("实时评测需包含 runtime 和 fixtures")
+        runtime = value["runtime"]
+        if set(runtime) - {"now", "timezone", "default_location", "tool_version"}:
+            raise ValueError("实时配置包含未知字段")
+        if not isinstance(runtime.get("now"), str):
+            raise ValueError("实时评测需要固定时间")  # noqa: TRY004 - pydantic validators require ValueError
+        if datetime.fromisoformat(runtime["now"]).tzinfo is None:
+            raise ValueError("固定时间必须包含时区")
+        if runtime.get("timezone"):
+            try:
+                ZoneInfo(runtime["timezone"])
+            except (ZoneInfoNotFoundError, TypeError) as error:
+                raise ValueError("无效时区") from error
+        if not isinstance(value["fixtures"], list) or len(value["fixtures"]) > 12:
+            raise ValueError("实时工具样本最多12组")
+        for fixture in value["fixtures"]:
+            if set(fixture) != {"request", "result"} or not isinstance(fixture["result"], dict):
+                raise ValueError("实时样本格式不正确")
+            fixture["request"] = ToolRequest.model_validate(fixture["request"]).model_dump()
+            if fixture["result"].get("status") not in {"success", "error"}:
+                raise ValueError("样本必须明确成功或失败")
+        return value
 
 
 class Reference(BaseModel):
@@ -100,7 +137,11 @@ def evaluate_input(inputs, *, retrieval_only=False, trace_context=None):
     from time import monotonic
     started = monotonic()
     if inputs.task == "answer":
-        result = answer_question(inputs.question, base_id, inputs.context, robot=inputs.robot, trace_context=trace_context)
+        from ..robots.identity import identity_scope
+        with identity_scope((inputs.robot_context or {}).get("name")):
+            result = answer_question(inputs.question, base_id, inputs.context, robot=inputs.robot, trace_context=trace_context,
+                                 runtime=(inputs.realtime or {}).get("runtime"),
+                                 fixtures=(inputs.realtime or {}).get("fixtures", []))
     else:
         from .observability import record_turn
         def operation(_):
@@ -132,6 +173,10 @@ def evaluate_input(inputs, *, retrieval_only=False, trace_context=None):
             "resolved_question": result.get("resolved_question"),
             "answer_kind": result.get("answer_kind"),
             "used_prompt_keys": result["execution_trace"].get("used_prompt_keys"),
+            "prompt_compositions": result["execution_trace"].get("prompt_compositions", []),
+            "tools": result["execution_trace"].get("tools", []),
+            "unavailable": result["execution_trace"].get("interaction", {}).get("unavailable", []),
+            "runtime": result["execution_trace"].get("runtime"),
             "routing_fallback": result["execution_trace"].get("interaction", {}).get("fallback"),
             "retrieved_documents": result.get("retrieved_documents", titles),
             "retrieved_document_ids": result.get("retrieved_document_ids", document_ids),

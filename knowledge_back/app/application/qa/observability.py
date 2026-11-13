@@ -38,6 +38,9 @@ class RunRecorder(BaseCallbackHandler):
     def on_retriever_start(self, serialized, query, *, run_id, parent_run_id=None, **kwargs):
         self._start(run_id, parent_run_id, kwargs.get("name") or "knowledge_retriever", "retriever")
 
+    def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, **kwargs):
+        self._start(run_id, parent_run_id, (serialized or {}).get("name", "tool"), "tool")
+
     def _finish(self, run_id, failed=False, usage=None):
         with self.lock:
             started = self.started.pop(run_id, None)
@@ -56,6 +59,8 @@ class RunRecorder(BaseCallbackHandler):
     def on_chain_error(self, error, *, run_id, **kwargs):
         self._finish(run_id, True)
 
+    on_tool_end = on_chain_end
+    on_tool_error = on_chain_error
     on_retriever_end = on_chain_end
     on_retriever_error = on_chain_error
     on_llm_error = on_chain_error
@@ -87,7 +92,7 @@ def record_turn(operation, *, metadata, robot):
     metadata["session_id"] = metadata.get("conversation_id", "")
 
     def details(existing=None):
-        return {**(existing or {}), "run_id": str(run_id), "pipeline_version": "rag-v2",
+        return {**(existing or {}), "run_id": str(run_id), "pipeline_version": (existing or {}).get("pipeline_version", "rag-v2"),
                 "prompt_version": prompt_fingerprint(), "prompts": prompt_metadata(), "steps": recorder.steps,
                 "token_usage": recorder.usage,
                 "destination": destination(current_app.config),

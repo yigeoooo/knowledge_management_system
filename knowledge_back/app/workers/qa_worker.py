@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..application.conversations.memory import prepare_context
 from ..application.conversations.service import lock_robot, user_ready, writable
-from ..application.prompts.registry import prompt_scope, published_snapshot
+from ..application.prompts.registry import has_prompt, prompt_scope, published_snapshot
 from ..application.qa.workflow import answer_question
 from ..core.extensions import db
 from ..core.http import ApiError
@@ -192,6 +192,12 @@ def process_one(app, turn_id=None):
             snapshot = log.context_snapshot
             prompts = log.prompt_snapshot
             robot = log.source_type == "ROBOT"
+            from ..application.realtime.service import runtime as make_runtime
+            from ..entities import Robot
+            device = db.session.get(Robot, log.robot_id) if robot else None
+            tool_runtime = make_runtime(device.default_location if device else None,
+                                        device.timezone if device else None)
+            robot_name = device.name if device else None
             db.session.rollback()
             from langchain_core.runnables import RunnableLambda
 
@@ -203,6 +209,10 @@ def process_one(app, turn_id=None):
                     snapshot = RunnableLambda(lambda _: prepare_context(
                         cid, number, turn_id=tid, lease_token=token)).invoke(
                             {}, config={"run_name": "prepare_memory"})
+                    if robot:
+                        snapshot["robot_name"] = robot_name
+                    if has_prompt("conversation_plan"):
+                        snapshot["tool_runtime"] = tool_runtime
                     saved = db.session.execute(
                         db.update(QALog)
                         .where(
@@ -230,7 +240,8 @@ def process_one(app, turn_id=None):
                     },
                 )
 
-            with prompt_scope(prompts):
+            from ..application.robots.identity import identity_scope
+            with prompt_scope(prompts), identity_scope((snapshot or {}).get("robot_name", robot_name)):
                 values = record_turn(execute, metadata={
                     "conversation_id": cid, "turn_id": tid, "knowledge_base_id": base_id,
                 }, robot=robot)

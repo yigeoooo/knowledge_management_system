@@ -161,6 +161,9 @@ SCHEMA["qa_logs"][1]["execution_trace"] = "RAG 运行版本、阶段耗时、召
 SCHEMA["robots"][1].update({
     "knowledge_base_id": "当前绑定知识库；存量未配置机器人为空且不可问答。",
     "binding_version": "每次换绑递增，旧会话不能跨绑定版本继续。",
+    "default_location_name": "天气城市编号对应的可读地区名称。",
+    "default_location": "管理员明确配置的默认查询地点，可为空。",
+    "timezone": "管理员配置的 IANA 时区，可为空。",
 })
 SCHEMA["qa_logs"][1].update({
     "conversation_id": "所属会话；历史兼容记录可为空。",
@@ -194,7 +197,7 @@ SCHEMA["qa_conversations"] = ("独立会话：用户或机器人归属，单会�
 
 SCHEMA['qa_logs'][1]['prompt_snapshot'] = '本轮使用的不可变提示词版本与正文快照，重试复用。'
 SCHEMA['prompt_templates'] = ('提示词用途与当前发布版本。', {
-    'key': '稳定用途键。', 'name': '展示名称。', 'active_version': '当前已发布版本号。', 'generation': '发布代数，用于并发检查。'})
+    'archived': '历史用途归档标记；保留原版本。', 'key': '稳定用途键。', 'name': '展示名称。', 'active_version': '当前已发布版本号。', 'generation': '发布代数，用于并发检查。'})
 SCHEMA['prompt_versions'] = ('不可变提示词版本；保存草稿产生新版本。', {
     'prompt_key': '所属提示词用途。', 'version': '用途内递增版本号。', 'content': '系统提示词正文。', 'note': '修改说明。'})
 SCHEMA['evaluation_datasets'] = ('每个知识库唯一的评测集。', {'name': '评测集名称。', 'knowledge_base_id': '评测知识库，每个知识库最多一个评测集。'})

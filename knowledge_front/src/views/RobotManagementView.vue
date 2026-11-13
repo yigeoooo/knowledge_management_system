@@ -11,7 +11,7 @@ interface Robot {
   id: string;
   serial_no: string;
   name: string | null;
-  description: string | null;
+  description: string | null; default_location: string | null; default_location_name?: string | null; timezone: string | null;
   knowledge_base_id: string | null; knowledge_base_name: string | null; binding_version: number; knowledge_base_status: string | null;
   status: RobotStatus;
   last_request_at: string | null;
@@ -40,7 +40,33 @@ const saving = ref(false);
 const editorError = ref("");
 const editing = ref<Robot | null>(null);
 const formRef = ref<FormInstance>();
-const form = reactive({ serial_no: "", name: "", description: "", knowledge_base_id: "", status: "active" as RobotStatus });
+const form = reactive({ serial_no: "", name: "", description: "", default_location: "", timezone: "", knowledge_base_id: "", status: "active" as RobotStatus });
+interface LocationOption { value: string; label: string; timezone: string }
+const locationOptions = ref<LocationOption[]>([]), locationLoading = ref(false);
+const timezoneOptions = ref<string[]>(['Asia/Shanghai']);
+let locationRequest = 0;
+async function searchLocations(query: string) {
+  const sequence = ++locationRequest;
+  if (query.trim().length < 2) { locationLoading.value = false; return; }
+  locationLoading.value = true;
+  try {
+    const result = await api<{ items: LocationOption[] }>(`/robots/location-options?q=${encodeURIComponent(query.trim())}`);
+    if (sequence === locationRequest) locationOptions.value = result.items;
+  } catch (e) { if (sequence === locationRequest) ElMessage.error((e as Error).message); }
+  finally { if (sequence === locationRequest) locationLoading.value = false; }
+}
+function timezoneLabel(value: string | null) {
+  return value === 'Asia/Shanghai' ? '北京时间（Asia/Shanghai）' : value || '未设置';
+}
+function chooseLocation(value: string) {
+  const option = locationOptions.value.find(p => p.value === value);
+  if (option) form.timezone = option.timezone;
+}
+async function loadTimezones(open: boolean) {
+  if (!open || timezoneOptions.value.length > 1) return;
+  try { timezoneOptions.value = (await api<{ items: string[] }>('/robots/timezone-options')).items; }
+  catch (e) { ElMessage.error((e as Error).message); }
+}
 let editorRequest = 0;
 
 const detailOpen = ref(false);
@@ -117,7 +143,7 @@ function resizePage() {
 async function openEditor(robot?: Robot) {
   const current = ++editorRequest;
   editing.value = robot || null;
-  Object.assign(form, { serial_no: "", name: "", description: "", knowledge_base_id: "", status: "active" as RobotStatus });
+  Object.assign(form, { serial_no: "", name: "", description: "", default_location: "", timezone: "", knowledge_base_id: "", status: "active" as RobotStatus });
   editorError.value = "";
   editorLoading.value = true;
   editorOpen.value = true;
@@ -132,6 +158,7 @@ async function openEditor(robot?: Robot) {
       serial_no: fresh.serial_no,
       name: fresh.name || "",
       description: fresh.description || "",
+      default_location: fresh.default_location || "", timezone: fresh.timezone || "",
       knowledge_base_id: fresh.knowledge_base_id || "",
       status: fresh.status,
     });
@@ -166,6 +193,7 @@ async function saveRobot() {
       serial_no: form.serial_no.trim(),
       name: form.name.trim() || null,
       description: form.description.trim() || null,
+      default_location: form.default_location.trim() || null, timezone: form.timezone.trim() || null,
       status: form.status,
     };
     if (editing.value) {
@@ -264,6 +292,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
         <template #default="{ row }"><div class="robot-cell"><el-avatar :size="34"><el-icon><Cpu /></el-icon></el-avatar><div><strong>{{ row.name || "未命名机器人" }}</strong><span>{{ row.serial_no }}</span></div></div></template>
       </el-table-column>
       <el-table-column label="绑定知识库" min-width="180"><template #default="{ row }">{{ row.knowledge_base_name || "待绑定" }}</template></el-table-column>
+      <el-table-column label="绑定城市" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.default_location_name || row.default_location || '未设置' }}</template></el-table-column>
+      <el-table-column label="时区" min-width="210"><template #default="{ row }">{{ timezoneLabel(row.timezone) }}</template></el-table-column>
       <el-table-column prop="description" label="描述" min-width="250" show-overflow-tooltip />
       <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
       <el-table-column label="最近请求" width="180"><template #default="{ row }">{{ formatTime(row.last_request_at) }}</template></el-table-column>
@@ -286,6 +316,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
       <el-form-item label="机器人序列号" prop="serial_no"><el-input v-model="form.serial_no" maxlength="100" placeholder="例如：ROBOT-001" /></el-form-item>
       <el-form-item label="绑定知识库" prop="knowledge_base_id"><el-select v-model="form.knowledge_base_id" placeholder="请选择知识库" filterable style="width:100%"><el-option v-if="editing?.knowledge_base_id && !baseOptions.some(b => b.id === editing?.knowledge_base_id)" :value="editing.knowledge_base_id" :label="`${editing.knowledge_base_name}（已停用）`" disabled /><el-option v-for="base in baseOptions" :key="base.id" :label="base.name" :value="base.id" /></el-select></el-form-item>
       <el-form-item label="机器人名称" prop="name"><el-input v-model="form.name" maxlength="200" placeholder="例如：一号巡检机器人" /></el-form-item>
+      <el-form-item label="实时查询默认地点"><el-select v-model="form.default_location" filterable remote clearable :remote-method="searchLocations" :loading="locationLoading" placeholder="输入城市或区县名称搜索" style="width:100%" @change="chooseLocation"><el-option v-if="form.default_location && !locationOptions.some(p => p.value === form.default_location)" :value="form.default_location" :label="editing?.default_location === form.default_location ? editing.default_location_name || form.default_location : form.default_location" /><el-option v-for="place in locationOptions" :key="place.value" :value="place.value" :label="place.label" /></el-select></el-form-item>
+      <el-form-item label="当地时区"><el-select v-model="form.timezone" filterable clearable placeholder="选择时区；选择地区后自动填入" style="width:100%" @visible-change="loadTimezones"><el-option v-if="form.timezone && !timezoneOptions.includes(form.timezone)" :value="form.timezone" :label="form.timezone" /><el-option v-for="zone in timezoneOptions" :key="zone" :value="zone" :label="zone === 'Asia/Shanghai' ? '北京时间（Asia/Shanghai）' : zone" /></el-select></el-form-item>
       <el-form-item label="描述" prop="description"><el-input v-model="form.description" type="textarea" :rows="4" maxlength="2000" show-word-limit placeholder="说明设备用途或所在场景" /></el-form-item>
       <el-form-item label="状态" prop="status"><el-select v-model="form.status" style="width: 100%"><el-option label="启用" value="active" /><el-option label="停用" value="disabled" /></el-select></el-form-item>
     </el-form>
@@ -299,6 +331,8 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
       <el-descriptions :column="1" border>
         <el-descriptions-item label="绑定知识库">{{ detail.knowledge_base_name || "待绑定" }}</el-descriptions-item>
       <el-descriptions-item label="序列号">{{ detail.serial_no }}</el-descriptions-item>
+        <el-descriptions-item label="绑定城市">{{ detail.default_location_name || detail.default_location || "未设置" }}</el-descriptions-item>
+        <el-descriptions-item label="时区">{{ timezoneLabel(detail.timezone) }}</el-descriptions-item>
         <el-descriptions-item label="描述">{{ detail.description || "—" }}</el-descriptions-item>
         <el-descriptions-item label="最近请求">{{ formatTime(detail.last_request_at) }}</el-descriptions-item>
         <el-descriptions-item label="注册时间">{{ formatTime(detail.created_at) }}</el-descriptions-item>

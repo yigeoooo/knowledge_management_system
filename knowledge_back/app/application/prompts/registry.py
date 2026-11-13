@@ -13,9 +13,12 @@ from ...core.extensions import db
 
 _BOOTSTRAP = {
     p["key"]: p
-    for filename in ("prompts-v1.json", "robot-interaction-v1.json")
+    for filename in ("conversation-v3-v1.json",)
     for p in json.loads((Path(__file__).parents[2] / "resources" / filename).read_text())
 }
+NEW_KEYS = {"robot_persona", "conversation_plan", "answer_generate", "review_answer",
+            "summarize", "suggest_questions", "review_suggestions"}
+OLD_ONLY = {"answer_web", "answer_robot", "resolve_web", "resolve_robot", "robot_interaction"}
 _current = ContextVar("prompt_snapshot", default=None)
 _used = ContextVar("used_prompt_keys", default=None)
 
@@ -41,10 +44,10 @@ def published_snapshot():
             PromptTemplate,
             (PromptTemplate.key == PromptVersion.prompt_key)
             & (PromptTemplate.active_version == PromptVersion.version),
-        )
+        ).where(PromptTemplate.archived.is_(False))
     ).all()
     result = {r.prompt_key: version_data(r) for r in rows}
-    if set(result) != set(_BOOTSTRAP):
+    if set(result) != NEW_KEYS:
         raise RuntimeError("提示词尚未初始化，请先升级数据库")
     return result
 
@@ -56,6 +59,8 @@ def prompt_scope(snapshot=None):
         yield existing
         return
     snapshot = snapshot if snapshot is not None else published_snapshot()
+    if set(snapshot) != NEW_KEYS:
+        raise RuntimeError("旧提示词快照已停用，请重新提问或创建新评测")
     token = _current.set(snapshot)
     try:
         yield snapshot
@@ -94,12 +99,13 @@ def has_prompt(key):
 
 def robot_prompt(key):
     instruction = get_prompt(key)
-    return get_prompt("robot_persona") + "\n\n" + instruction if has_prompt("robot_persona") else instruction
+    from ..robots.identity import identity_prompt
+    return identity_prompt(get_prompt("robot_persona") + "\n\n" + instruction if has_prompt("robot_persona") else instruction)
 
 
 @contextmanager
 def track_prompt_usage():
-    used = set()
+    used = PromptUsage()
     token = _used.set(used)
     try:
         yield used
@@ -114,3 +120,29 @@ def prompt_metadata():
 
 def prompt_fingerprint():
     return sha256(json.dumps(prompt_metadata(), sort_keys=True).encode()).hexdigest()[:16]
+
+
+class PromptUsage(set):
+    def __init__(self):
+        super().__init__()
+        self.compositions = []
+
+
+def effective_prompt(key, *, robot=False, evidence=()):
+    from .composition import compile_prompt
+    compiled = compile_prompt(get_prompt(key), channel="robot" if robot else "web", evidence=evidence)
+    content = compiled.content
+    if robot and key in {"conversation_plan", "answer_generate"}:
+        content = get_prompt("robot_persona") + "\n\n" + content
+    if robot:
+        from ..robots.identity import identity_prompt
+        content = identity_prompt(content)
+    used = _used.get()
+    if used is not None and hasattr(used, "compositions"):
+        record = {"key": key, "sections": list(compiled.sections),
+                  "channel": "robot" if robot else "web", "evidence": list(evidence),
+                  "composer_version": compiled.composer_version,
+                  "sha256": sha256(content.encode()).hexdigest()}
+        if record not in used.compositions:
+            used.compositions.append(record)
+    return content

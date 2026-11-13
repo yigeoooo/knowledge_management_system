@@ -10,7 +10,7 @@ from ...repositories.robot_repository import RobotRepository
 from ..conversations.service import active_base, uuid_value
 
 ROBOT_STATUSES = {"active", "disabled"}
-ROBOT_FIELDS = {"serial_no", "name", "description", "status", "knowledge_base_id", "expected_binding_version"}
+ROBOT_FIELDS = {"serial_no", "name", "description", "status", "knowledge_base_id", "expected_binding_version", "default_location", "timezone"}
 robot_repository = RobotRepository()
 
 def robot_data(robot):
@@ -20,6 +20,9 @@ def robot_data(robot):
         "serial_no": robot.serial_no,
         "name": robot.name,
         "description": robot.description,
+        "default_location": robot.default_location,
+        "default_location_name": robot.default_location_name or robot.default_location,
+        "timezone": robot.timezone,
         "knowledge_base_id": str(robot.knowledge_base_id) if robot.knowledge_base_id else None,
         "knowledge_base_name": base.name if base else None,
         "knowledge_base_status": base.status if base else None,
@@ -82,6 +85,30 @@ def validated_input(*, creating=False):
         values["name"] = valid_optional_text(body["name"], "机器人名称", 200)
     if "description" in body:
         values["description"] = valid_optional_text(body["description"], "机器人描述", 2000)
+    if "default_location" in body:
+        values["default_location"] = valid_optional_text(body["default_location"], "默认地点", 200)
+        location = values["default_location"]
+        values["default_location_name"] = location
+        if location and location.isdigit():
+            from time import monotonic
+            from ..realtime.service import _get
+            try:
+                places = _get("/geo/v2/city/lookup", {"location": location, "number": 1, "lang": "zh"}, monotonic() + 5).get("location", [])
+                if len(places) != 1 or places[0].get("id") != location:
+                    raise ValueError("unknown location")
+                place = places[0]
+                values["default_location_name"] = " / ".join(dict.fromkeys(filter(None, [place.get("adm1"), place.get("adm2"), place.get("name")])))
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ApiError("地区校验暂不可用，请稍后重试", 503) from None
+    if "timezone" in body:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        zone = valid_optional_text(body["timezone"], "时区", 100)
+        try:
+            if zone:
+                ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ApiError("请填写有效 IANA 时区，例如 Asia/Shanghai", 422) from None
+        values["timezone"] = zone
     if "status" in body or creating:
         status = body.get("status", "active")
         if status not in ROBOT_STATUSES:

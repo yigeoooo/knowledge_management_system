@@ -33,6 +33,8 @@ def configuration(overrides):
         raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters")
     max_document_size = int(overrides.get("MAX_DOCUMENT_SIZE", os.getenv("MAX_DOCUMENT_SIZE", str(200 * 1024 * 1024))))
     return {
+        "QWEATHER_HOST": os.getenv("QWEATHER_HOST", ""),
+        "QWEATHER_API_KEY": os.getenv("QWEATHER_API_KEY", ""),
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
         "LOG_SQL_ENABLED": os.getenv("LOG_SQL_ENABLED", "false" if production or overrides.get("TESTING") else "true").lower() in {"1", "true", "yes"},
         "LOG_SQL_SLOW_MS": max(0, int(os.getenv("LOG_SQL_SLOW_MS", "500"))),

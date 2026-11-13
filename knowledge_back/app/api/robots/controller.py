@@ -134,3 +134,28 @@ def disable_robot(robot_id):
         record_action("robot.delete", robot, {"previous_status": previous_status})
         commit_robot_change()
     return success({"id": str(robot.id), "status": robot.status})
+
+
+@robots.get("/location-options")
+@page_required("/robots")
+def location_options():
+    from time import monotonic
+
+    from ...application.realtime.service import _get
+    query = request.args.get("q", "").strip()
+    if not 2 <= len(query) <= 100:
+        return success({"items": []})
+    try:
+        result = _get("/geo/v2/city/lookup", {"location": query, "number": 20, "lang": "zh"}, monotonic() + 5)
+        items = [{"value": p["id"], "label": " / ".join(dict.fromkeys(filter(None, [p.get("country"), p.get("adm1"), p.get("adm2"), p.get("name")]))), "timezone": p["tz"]} for p in result.get("location", [])]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ApiError("地区查询暂不可用，请稍后重试", 503) from None
+    return success({"items": items})
+
+
+@robots.get("/timezone-options")
+@page_required("/robots")
+def timezone_options():
+    from zoneinfo import available_timezones
+    zones = sorted(available_timezones())
+    return success({"items": ["Asia/Shanghai", *[z for z in zones if z != "Asia/Shanghai"]]})

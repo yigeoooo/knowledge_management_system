@@ -369,6 +369,19 @@ def history_context(id, cid):
                                                history_number("end", None), request.args.get("task")))
 
 
+@experiments.get("/datasets/<uuid:id>/robot-options")
+@page_required("/evaluations")
+def robot_options(id):
+    from ...entities import Robot
+    dataset = find(EvaluationDataset, id)
+    rows = db.session.scalars(db.select(Robot).where(
+        Robot.knowledge_base_id == dataset.knowledge_base_id, Robot.status == "active"
+    ).order_by(Robot.name, Robot.id)).all()
+    return success({"items": [{"id": str(r.id), "name": r.name or r.serial_no,
+        "default_location": r.default_location, "default_location_name": r.default_location_name,
+        "timezone": r.timezone} for r in rows]})
+
+
 def validate_example(data, dataset):
     base = find(KnowledgeBase, dataset.knowledge_base_id)
     if base.status != "active":
@@ -381,6 +394,26 @@ def validate_example(data, dataset):
         reference = Reference.model_validate(data.get("reference", {}))
     except (ValidationError, ValueError, TypeError):
         raise ApiError("题目或参考答案格式不正确", 422) from None
+    inputs.robot_context = None
+    if inputs.robot and inputs.robot_id:
+        from uuid import UUID
+        from ...entities import Robot
+        try:
+            robot = db.session.get(Robot, UUID(inputs.robot_id))
+        except ValueError:
+            robot = None
+        if not robot or robot.status != "active" or robot.knowledge_base_id != dataset.knowledge_base_id:
+            raise ApiError("请选择当前知识库下已启用的机器人", 422)
+        inputs.robot_context = {"name": robot.name or robot.serial_no,
+            "default_location": robot.default_location, "default_location_name": robot.default_location_name,
+            "timezone": robot.timezone}
+        spec = inputs.realtime or {"runtime": {"now": "2026-01-01T00:00:00+00:00"}, "fixtures": []}
+        spec["runtime"].update({"default_location": robot.default_location, "timezone": robot.timezone})
+        inputs.realtime = spec
+    elif inputs.robot:
+        raise ApiError("机器人标注题请选择一个机器人", 422)
+    else:
+        inputs.robot_id = None
     if len(json.dumps(inputs.context, ensure_ascii=False)) > 20000:
         raise ApiError("历史语境不能超过 20000 字", 422)
     if inputs.task == "summary":

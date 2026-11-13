@@ -12,7 +12,7 @@ const applicablePrompts = computed(() => props.prompts.filter(p => props.example
 watch(() => props.example, () => {
   error.value = ''
   for (const key of Object.keys(overrides)) delete overrides[key]
-  for (const prompt of applicablePrompts.value) overrides[prompt.key] = props.initialOverrides[prompt.key] || ''
+  for (const prompt of applicablePrompts.value) { const newest = [...(prompt.versions || [])].sort((a, b) => b.version - a.version)[0]; overrides[prompt.key] = props.initialOverrides[prompt.key] ?? (newest && newest.version !== prompt.active_version ? newest.id : '') }
 })
 async function start() {
   if (!props.example || !props.dataset || saving.value || !applicablePrompts.value.length) return

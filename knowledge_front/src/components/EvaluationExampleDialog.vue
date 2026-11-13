@@ -10,17 +10,27 @@ import EvaluationHistoryImportDialog, { type ImportedHistory } from './Evaluatio
 const props = defineProps<{ open: boolean; dataset: Dataset | undefined; example: Example | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 interface HistoryTurn { question: string; answer: string; [key: string]: unknown }
-const form = reactive({ task: 'answer', name: '', question: '', robot: false, expected_document_ids: [] as string[], answer_points: '', forbidden_points: '', expected_status: '', expected_answer_kind: '', reference_answer: '', source_notes: '', summary: '', turns: [] as HistoryTurn[] })
+const form = reactive({ task: 'answer', name: '', question: '', robot: false, robot_id: '', expected_document_ids: [] as string[], answer_points: '', forbidden_points: '', expected_status: '', expected_answer_kind: '', reference_answer: '', source_notes: '', summary: '', turns: [] as HistoryTurn[] })
 const documents = ref<EvaluationDocument[]>([]), documentsLoading = ref(false), documentError = ref(''), saving = ref(false)
 const showSources = ref(true), expanded = ref(false), mobilePane = ref('question'), narrow = ref(false)
 const importingHistory = ref(false)
+const realtimeJson = ref('')
+interface RobotOption { id: string; name: string; default_location_name?: string; default_location?: string; timezone?: string }
+const robots = ref<RobotOption[]>([])
+const robotError = ref('')
+const selectedRobot = computed(() => robots.value.find(r => r.id === form.robot_id))
+async function loadRobots() {
+  robotError.value = ''; robots.value = []
+  try { robots.value = (await api<{ items: RobotOption[] }>(`/evaluations/datasets/${props.dataset?.id}/robot-options`)).items }
+  catch (e) { robotError.value = (e as Error).message }
+}
 const canReadLogs = computed(() => session.pages.some(page => page.route_path === '/qa-logs'))
 let contextExtra: Record<string, unknown> = {}, documentSequence = 0, controller: AbortController | undefined
 let media: MediaQueryList | undefined
 const historyNeeded = computed(() => ['followup', 'summary'].includes(form.task))
 const referenceVisible = computed(() => narrow.value ? mobilePane.value === 'reference' : showSources.value)
 const formVisible = computed(() => narrow.value ? mobilePane.value === 'question' : !expanded.value || !showSources.value)
-const canSave = computed(() => !saving.value && !!form.name.trim() && !!form.question.trim() && !documentsLoading.value && !documentError.value)
+const canSave = computed(() => !saving.value && (!form.robot || !!selectedRobot.value) && !!form.name.trim() && !!form.question.trim() && !documentsLoading.value && !documentError.value)
 const documentOptions = computed(() => [...documents.value, ...form.expected_document_ids.filter(id => !documents.value.some(d => d.id === id)).map(id => ({ id, title: '文档已失效，请移除后重新选择', filename: id, indexed: false }))])
 function updateScreen() { narrow.value = !!media?.matches }
 onMounted(() => { media = window.matchMedia('(max-width: 1023px)'); updateScreen(); media.addEventListener('change', updateScreen) })
@@ -28,11 +38,12 @@ watch(() => props.open, open => {
   importingHistory.value = false
   if (!open) { ++documentSequence; controller?.abort(); return }
   const row = props.example, context = row?.inputs.context || {}
+  realtimeJson.value = row?.inputs.realtime ? JSON.stringify(row.inputs.realtime, null, 2) : ''
   const turns = Array.isArray(context.turns) ? context.turns : []
   contextExtra = Object.fromEntries(Object.entries(context).filter(([key]) => !['turns', 'summary'].includes(key)))
   Object.assign(form, {
     task: row?.inputs.task && row.inputs.task !== 'answer' ? row.inputs.task : turns.length || context.summary ? 'followup' : 'answer',
-    name: row?.name || '', question: row?.inputs.question || '', robot: row?.inputs.robot || false,
+    name: row?.name || '', question: row?.inputs.question || '', robot: row?.inputs.robot || false, robot_id: row?.inputs.robot_id || '',
     expected_document_ids: [...(row?.reference.expected_document_ids || [])],
     answer_points: row?.reference.answer_points.join('\n') || '', forbidden_points: row?.reference.forbidden_points?.join('\n') || '',
     expected_status: row?.reference.expected_status || '', expected_answer_kind: row?.reference.expected_answer_kind || '', reference_answer: row?.reference.reference_answer || '', source_notes: row?.reference.source_notes || '',
@@ -40,7 +51,7 @@ watch(() => props.open, open => {
     turns: turns.map(t => t && typeof t === 'object' ? ({ ...t, question: String(t.question || ''), answer: String(t.answer || '') }) : ({ question: String(t || ''), answer: '' })),
   })
   showSources.value = true; expanded.value = false; mobilePane.value = 'question'
-  documents.value = []; void searchDocuments()
+  documents.value = []; void searchDocuments(); void loadRobots()
 }, { immediate: true })
 watch(() => form.task, task => { if (['followup', 'summary'].includes(task) && !form.turns.length && !form.summary) form.turns.push({ question: '', answer: '' }) })
 async function searchDocuments(query = '') {
@@ -82,7 +93,7 @@ async function save(status: 'draft' | 'enabled') {
   saving.value = true
   try {
     const context = historyNeeded.value ? { ...contextExtra, summary: form.summary, turns: form.turns } : {}
-    const payload = { status, name: form.name, inputs: { task: form.task === 'followup' ? 'answer' : form.task, question: form.question, robot: form.robot, context }, reference: { expected_document_ids: form.expected_document_ids, answer_points: lines(form.answer_points), forbidden_points: lines(form.forbidden_points), expected_status: form.expected_status || null, expected_answer_kind: form.robot && ['answer', 'followup'].includes(form.task) ? form.expected_answer_kind || null : null, reference_answer: form.reference_answer, source_notes: form.source_notes }, expected_revision: props.example?.revision }
+    const payload = { status, name: form.name, inputs: { task: form.task === 'followup' ? 'answer' : form.task, question: form.question, robot: form.robot, robot_id: form.robot ? form.robot_id : null, context, realtime: realtimeJson.value.trim() ? JSON.parse(realtimeJson.value) : null }, reference: { expected_document_ids: form.expected_document_ids, answer_points: lines(form.answer_points), forbidden_points: lines(form.forbidden_points), expected_status: form.expected_status || null, expected_answer_kind: form.robot && ['answer', 'followup'].includes(form.task) ? form.expected_answer_kind || null : null, reference_answer: form.reference_answer, source_notes: form.source_notes }, expected_revision: props.example?.revision }
     await api(props.example ? `/evaluations/examples/${props.example.id}` : `/evaluations/datasets/${props.dataset.id}/examples`, { method: props.example ? 'PUT' : 'POST', body: JSON.stringify(payload) })
     ElMessage.success(status === 'enabled' ? '测试题已保存并启用，可直接用于正式评测' : '已保存草稿，不参与发布验收')
     emit('saved')
@@ -98,7 +109,15 @@ onBeforeUnmount(() => { ++documentSequence; controller?.abort(); media?.removeEv
     <div class="editor-toolbar"><span>评测集：{{ dataset?.name }}</span><el-radio-group v-if="narrow" v-model="mobilePane" size="small"><el-radio-button value="question">题目编辑</el-radio-button><el-radio-button value="reference">资料预览</el-radio-button></el-radio-group><el-button v-else link type="primary" @click="showSources = !showSources; expanded = false">{{ showSources ? '收起资料' : '查看知识库资料' }}</el-button></div>
     <div class="example-workspace" :class="{ split: referenceVisible && formVisible && !narrow }">
       <el-form v-show="formVisible" label-position="top" class="example-editor" :disabled="saving">
-        <div class="form-columns"><el-form-item label="样本名称"><el-input v-model="form.name" maxlength="200" /></el-form-item><el-form-item label="回答渠道"><el-switch v-model="form.robot" active-text="机器人简洁回答" inactive-text="网页回答" /></el-form-item></div>
+        <div class="form-columns"><el-form-item v-if="form.robot" label="实时评测固定样本（可选 JSON）"><el-input v-model="realtimeJson" type="textarea" :rows="5" placeholder='{"runtime":{"now":"2026-11-12T08:00:00+08:00","timezone":"Asia/Shanghai","default_location":"宜宾市"},"fixtures":[]}' /><small>工具调用需与 fixtures 中的 request 完全匹配；不会联网补齐样本。填写规则见实时工具开发文档。</small></el-form-item><el-form-item label="样本名称"><el-input v-model="form.name" maxlength="200" /></el-form-item><el-form-item label="回答渠道"><el-switch v-model="form.robot" active-text="机器人简洁回答" inactive-text="网页回答" /></el-form-item></div>
+        <el-form-item v-if="form.robot" label="评测机器人">
+          <el-select v-model="form.robot_id" filterable placeholder="选择当前知识库绑定的机器人" aria-label="评测机器人">
+            <el-option v-for="robot in robots" :key="robot.id" :value="robot.id" :label="robot.name" />
+          </el-select>
+          <p v-if="selectedRobot" class="help-text">绑定城市：{{ selectedRobot.default_location_name || selectedRobot.default_location || '未设置' }} · 时区：{{ selectedRobot.timezone || '未设置' }}</p>
+          <p class="help-text">保存时记录机器人的名称、城市和时区，用于本题评测。天气结果仍使用固定样本；选择机器人不会自动获取天气样本。</p>
+          <el-alert v-if="robotError" :title="robotError" type="error" :closable="false" />
+        </el-form-item>
         <el-form-item label="测试任务"><el-select v-model="form.task" aria-label="测试任务"><el-option label="知识问答（单轮问题）" value="answer" /><el-option label="连续追问（带历史问答）" value="followup" /><el-option label="会话摘要" value="summary" /><el-option label="推荐问题" value="suggestions" /></el-select></el-form-item>
         <el-form-item :label="form.task === 'summary' ? '摘要任务说明' : form.task === 'suggestions' ? '资料检索主题' : '测试问题'"><el-input v-model="form.question" type="textarea" :rows="2" maxlength="2000" /></el-form-item>
         <div class="form-columns"><el-form-item label="预期命中的文档（从当前知识库选择）">
