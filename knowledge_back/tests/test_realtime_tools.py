@@ -63,12 +63,13 @@ def test_provider_ambiguity_not_popularity(app, monkeypatch):
     assert result["reason"] == "ambiguous_location"
 
 
-def test_provider_stale_data_rejected(monkeypatch):
+def test_provider_delayed_observation_accepted(monkeypatch):
     responses = iter([{"location": [{"id": "1", "name": "宜宾", "tz": "Asia/Shanghai"}]},
                       {"now": {"obsTime": "2026-11-11T00:00:00+00:00", "text": "晴", "temp": "18", "feelsLike": "18", "humidity": "50", "precip": "0"}}])
     monkeypatch.setattr(service, "_get", lambda *args: next(responses))
     result = service._weather(ToolRequest(name="get_weather", location="宜宾").model_dump(), service._stamp(CLOCK["now"]), 100)
-    assert result["reason"] == "stale"
+    assert result["status"] == "success"
+    assert result["updated_at"] == "2026-11-11T00:00:00+00:00"
 
 
 def test_provider_out_of_range_date_does_not_change_day(monkeypatch):
@@ -102,3 +103,41 @@ def test_regional_host_and_gzip_response(app, monkeypatch):
     app.config.update(QWEATHER_HOST='example.re.qweatherapi.com', QWEATHER_API_KEY='test')
     with app.app_context():
         assert service._get('/geo/v2/city/lookup', {}, monotonic() + 5)['code'] == '200'
+
+
+def test_exact_city_selected_over_districts(monkeypatch):
+    responses = iter([{'location': [
+        {'id': 'district', 'name': '海淀'},
+        {'id': '101010100', 'name': '北京', 'tz': 'Asia/Shanghai'}]},
+        {'now': {'obsTime': CLOCK['now'], 'text': '晴', 'temp': '18',
+                 'feelsLike': '18', 'humidity': '50', 'precip': '0'}}])
+    def get(path, params, deadline):
+        if path == '/v7/weather/now':
+            assert params['location'] == '101010100'
+        return next(responses)
+    monkeypatch.setattr(service, '_get', get)
+    result = service._weather(ToolRequest(name='get_weather', location='北京市').model_dump(), service._stamp(CLOCK['now']), 100)
+    assert result['status'] == 'success'
+    assert result['location'] == '北京'
+
+
+def test_identical_city_names_remain_ambiguous(monkeypatch):
+    monkeypatch.setattr(service, '_get', lambda *args: {'location': [
+        {'id': 'a', 'name': '同名市'}, {'id': 'b', 'name': '同名市'}]})
+    result = service._weather(ToolRequest(name='get_weather', location='同名市').model_dump(), service._stamp(CLOCK['now']), 100)
+    assert result['reason'] == 'ambiguous_location'
+
+
+def test_province_requests_city_without_provider_call(monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('province must be clarified before lookup')
+    monkeypatch.setattr(service, '_get', unexpected)
+    for name in ['四川', '陕西省', '广西壮族自治区']:
+        result = service._weather(ToolRequest(name='get_weather', location=name).model_dump(), service._stamp(CLOCK['now']), 100)
+        assert result['reason'] == 'province_location'
+
+
+def test_unknown_town_requests_county(monkeypatch):
+    monkeypatch.setattr(service, '_get', lambda *args: {'location': []})
+    result = service._weather(ToolRequest(name='get_weather', location='庆符镇').model_dump(), service._stamp(CLOCK['now']), 100)
+    assert result['reason'] == 'location_not_found'

@@ -76,7 +76,14 @@ def plan_conversation(state):
 
 def execute_tools(state):
     from ..realtime.service import execute
-    tools = execute(state["interaction"]["tool_requests"], state["runtime"], fixtures=state.get("fixtures"))
+    requests = state["interaction"]["tool_requests"]
+    if state.get("robot"):
+        # Explicit locations in the current question override the device default.
+        # Historical city names must not replace the stable configured city ID.
+        requests = [{**request, "location": None, "location_source": "default"}
+                    if request["name"] == "get_weather" and request.get("location_source") != "question"
+                    else request for request in requests]
+    tools = execute(requests, state["runtime"], fixtures=state.get("fixtures"))
     return {"tools": tools}
 
 
@@ -117,6 +124,8 @@ def candidate_answer(state):
         notice = "".join(dict.fromkeys(MESSAGES.get(r, MESSAGES["unavailable"]) for r in reasons))
         answer = (answer + " " if context else "") + notice
         status = "PARTIAL" if status in {"SUCCESS", "PARTIAL"} else "NO_EVIDENCE"
+        if not context and any(r in {"province_location", "location_not_found", "location_unresolved", "ambiguous_location"} for r in reasons):
+            status = "CLARIFICATION"
     return {"result": {"answer": answer, "sources": [s for s in sources if not str(s.get("source_id", "")).startswith("tool-") and s.get("document_id")] + (material.media if material and not state.get("robot") else []),
                        "model_name": model, "status": status,
                        "retrieval_count": material.retrieval_count if material else 0,

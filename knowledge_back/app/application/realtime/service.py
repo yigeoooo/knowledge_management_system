@@ -5,6 +5,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from time import monotonic
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
@@ -18,7 +19,10 @@ MESSAGES = {
     "unsupported": "暂不支持查询这类实时信息。",
     "missing_location": "尚未配置可用地点，暂时无法查询天气。",
     "missing_timezone": "尚未配置可用时区，暂时无法确认当地时间。",
-    "ambiguous_location": "地点存在歧义，暂时无法确认天气。",
+    "ambiguous_location": "这个地点对应多个地区，请补充所属省、市或县。",
+    "location_unresolved": "天气服务未能识别该地点，请补充所属城市或区县后重试。",
+    "province_location": "省内各地天气不同，请问你想查询哪个城市或区县的天气？",
+    "location_not_found": "天气服务暂未找到这个地点，请补充所属城市或区县，例如高县；乡镇可能没有独立天气数据。",
     "unsupported_date": "暂时查不到所选日期的天气。",
     "unavailable": "实时服务暂不可用，暂时无法确认查询结果。",
     "stale": "查询结果已过期，暂时无法确认最新情况。",
@@ -68,14 +72,40 @@ def _get(path, params, deadline):
             if len(payload) > 262144:
                 raise ValueError("response too large")
         result = json.loads(payload)
+    if result.get("code") == "404" and path == "/geo/v2/city/lookup":
+        return {"location": []}
     if result.get("code") != "200":
         raise ValueError("provider unavailable")
     return result
 
 
+PROVINCES = set("河北 山西 辽宁 吉林 黑龙江 江苏 浙江 安徽 福建 江西 山东 河南 湖北 湖南 广东 海南 四川 贵州 云南 陕西 甘肃 青海 台湾 内蒙古 广西 西藏 宁夏 新疆 香港 澳门".split())
+
+
 def _weather(request, clock, deadline):
-    locations = _get("/geo/v2/city/lookup", {"location": request["location"], "number": 10}, deadline).get("location", [])
-    # Never pick the first popular result when the provider returns several places.
+    location = str(request["location"]).strip()
+    province = location.removesuffix("省").removesuffix("壮族自治区").removesuffix("回族自治区").removesuffix("自治区").removesuffix("特别行政区")
+    if province in PROVINCES:
+        return {"status": "error", "reason": "province_location"}
+    try:
+        locations = _get("/geo/v2/city/lookup", {"location": request["location"], "number": 10}, deadline).get("location", [])
+    except HTTPError as error:
+        if error.code == 404:
+            return {"status": "error", "reason": "location_not_found"}
+        if error.code == 400:
+            return {"status": "error", "reason": "location_unresolved"}
+        raise
+    if not locations:
+        return {"status": "error", "reason": "location_not_found"}
+    # City search also returns districts and fuzzy matches. Prefer a unique
+    # exact city name/ID; never resolve genuinely identical names by ranking.
+    query = str(request["location"]).strip().casefold()
+    def normalized(value):
+        return str(value or "").strip().casefold().removesuffix("市")
+    exact = [p for p in locations if str(p.get("id", "")) == query
+             or normalized(p.get("name")) == normalized(query)]
+    if exact:
+        locations = list({p["id"]: p for p in exact}.values())
     if len(locations) != 1:
         return {"status": "error", "reason": "ambiguous_location"}
     place = locations[0]
@@ -96,12 +126,12 @@ def _weather(request, clock, deadline):
             return {"status": "error", "reason": "unsupported_date"}
         updated = _stamp(payload["updateTime"])
         data = {key: raw[key] for key in ("textDay", "textNight", "tempMax", "tempMin", "precip")}
-    lifetime = timedelta(minutes=30) if request["mode"] == "now" else timedelta(hours=12)
-    if updated > clock + timedelta(minutes=5) or clock - updated > lifetime:
+    # Provider observations update asynchronously; age alone is not a failure.
+    if updated > clock + timedelta(minutes=5):
         return {"status": "error", "reason": "stale"}
     return {"status": "success", "location": place["name"], "location_id": place["id"],
             "timezone": place["tz"], "date": day.isoformat(), "mode": request["mode"],
-            "updated_at": updated.isoformat(), "expires_at": min(updated + lifetime, clock + timedelta(minutes=5)).isoformat(),
+            "updated_at": updated.isoformat(), "expires_at": (clock + timedelta(minutes=5)).isoformat(),
             "units": {"temperature": "°C", "precipitation": "mm", "humidity": "%"},
             "source": "qweather", "data": data}
 

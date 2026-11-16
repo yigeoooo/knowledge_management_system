@@ -135,7 +135,7 @@ def turn_data(log, *, robot=False):
     sources = log.sources or []
     answer = readable_answer(log.answer, sources) if log.answer else None
     if robot and answer:
-        if log.status == "NO_EVIDENCE":
+        if log.status == "NO_EVIDENCE" and log.answer_kind != "realtime":
             answer = ROBOT_NO_EVIDENCE
         elif log.status == "SOURCES_ONLY":
             answer = ROBOT_FORMAT_NOTICE
