@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { createUuid } from "../lib/uuid";
 import {
   createUniver, defaultTheme, LocaleType,
   HorizontalAlign, VerticalAlign, WrapStrategy, BorderStyleTypes, TextDecoration,
@@ -237,7 +238,7 @@ function toUniverWorkbook(source: ExcelWorkbook) {
     return id;
   });
   return {
-    id: `workbook-${crypto.randomUUID()}`,
+    id: `workbook-${createUuid()}`,
     name: props.title || "Excel 表格",
     appVersion: "1.0.0",
     locale: LocaleType.ZH_CN,
@@ -352,7 +353,7 @@ function emitChange() {
 function initialize() {
   if (!container.value) return;
   destroy();
-  const containerId = `univer-container-${crypto.randomUUID()}`;
+  const containerId = `univer-container-${createUuid()}`;
   container.value.id = containerId;
   const result = createUniver({
     locale: LocaleType.ZH_CN,

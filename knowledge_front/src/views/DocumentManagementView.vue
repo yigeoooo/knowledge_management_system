@@ -26,6 +26,7 @@ import {
   RefreshRight,
 } from "@element-plus/icons-vue";
 import { api, uploadFile } from "../lib/session";
+import { createUuid } from "../lib/uuid";
 import { queryParams } from "../lib/query";
 import WordContent from "../components/WordContent.vue";
 import { renderMarkdown } from "../lib/markdown";
@@ -575,7 +576,7 @@ async function saveEdit(): Promise<boolean> {
       const body = { base_version_id: editBaseId.value, content: wordContent.value };
       const payload = JSON.stringify(body);
       if (!saveAttempt || saveAttempt.payload !== payload)
-        saveAttempt = { payload, id: crypto.randomUUID() };
+        saveAttempt = { payload, id: createUuid() };
       const result = await api<{ version: Version }>(`/documents/${detail.value.id}/word-content`, {
         method: "POST",
         body: JSON.stringify({ ...body, request_id: saveAttempt.id }),
@@ -587,7 +588,7 @@ async function saveEdit(): Promise<boolean> {
       const body = { base_version_id: editBaseId.value, workbook: excelLatest.value };
       const payload = JSON.stringify(body);
       if (!saveAttempt || saveAttempt.payload !== payload)
-        saveAttempt = { payload, id: crypto.randomUUID() };
+        saveAttempt = { payload, id: createUuid() };
       const result = await api<{ version: Version }>(
         `/documents/${detail.value.id}/excel-content`,
         {

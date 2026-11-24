@@ -12,6 +12,16 @@ async function displayColumnWidth(page: import('@playwright/test').Page, selecto
   }, column)
 }
 
+for (const withoutRandomUUID of [false, true]) {
+  test.describe(withoutRandomUUID ? 'HTTP browser without crypto.randomUUID' : 'browser with crypto.randomUUID', () => {
+    test.beforeEach(async ({ page }) => {
+      if (withoutRandomUUID) {
+        await page.addInitScript(() => {
+          Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true })
+        })
+      }
+    })
+
 test('Excel creation mounts Univer and submits a workbook snapshot', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
@@ -194,3 +204,6 @@ test('Excel preview converts narrow Excel character widths into readable cell wi
   await expect.poll(() => displayColumnWidth(page, '.excel-preview', 'A')).toBeGreaterThanOrEqual(72)
   await expect.poll(() => displayColumnWidth(page, '.excel-preview', 'C')).toBeGreaterThanOrEqual(72)
 })
+
+  })
+}
