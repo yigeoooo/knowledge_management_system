@@ -3,7 +3,8 @@
 from pathlib import PurePath
 
 from ...core.http import ApiError
-from ...integrations.storage.minio_adapter import presign_get, read_object
+from ...integrations.storage.minio_adapter import read_object
+from .file_access import presign_browser_get as presign_get
 from .service import (
     CONTENT_TYPES,
     EXCEL_EXTENSIONS,

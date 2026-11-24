@@ -82,6 +82,10 @@ curl -fsS http://127.0.0.1:9000/minio/health/live
 
 AIStor Console 地址为 `http://127.0.0.1:9001`。后端使用 `.env.local` 中的 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY` 和 `MINIO_SECRET_KEY` 访问对象存储。`MINIO_BUCKET` 作为历史对象的兼容桶保留；创建知识库时会自动创建以知识库 UUID 派生的独立 Bucket，文档版本的 `minio_bucket` 保存实际使用的桶名。
 
+浏览器预览和下载文件统一使用同源的 `/api/v1/documents/file?token=...`。登录并通过页面权限校验后，API 才会生成限定到具体文件的签名链接，有效期沿用 `MINIO_URL_SECONDS`。后端通过内部 `MINIO_ENDPOINT` 流式读取文件，支持 PDF 和视频的 Range 请求；浏览器不再直接连接 MinIO。签名链接属于临时访问凭证，不要公开分享。
+
+本地沿用 Vite 的 `/api` 代理；服务器沿用 Nginx 的 `/api` 代理即可，无需为浏览器开放 `9000` 端口。该修复只涉及后端，拉取代码后重启后端即可生效。图片、视频索引时供外部 AI 服务读取的 URL 仍使用 `MINIO_PUBLIC_ENDPOINT`，与浏览器预览入口分别配置。
+
 ### 2.4 DeepSeek 和阿里云百炼配置
 
 DeepSeek 对话模型使用 OpenAI 兼容接口：

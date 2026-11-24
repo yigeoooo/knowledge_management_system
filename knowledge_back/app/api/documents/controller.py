@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 
 from ...api.auth.controller import page_required
 from ...application.audit.operator_service import operator_names
+from ...application.documents.file_access import (
+    presign_browser_get as presign_get,
+    serve_browser_file,
+)
 from ...application.documents.service import (
     CONTENT_TYPES,
     DOCUMENT_STATUSES,
@@ -38,7 +42,6 @@ from ...integrations.storage.minio_adapter import (
     StorageError,
     delete_object,
     knowledge_base_bucket,
-    presign_get,
     presign_put,
     put_object,
     read_object,
@@ -623,6 +626,11 @@ def save_excel_content(document_id):
         raise
     _schedule_index_task()
     return success({"document": _document_data(document), "version": _version_data(version)}), 201
+
+
+@documents.get("/documents/file")
+def document_file():
+    return serve_browser_file(request.args.get("token", ""))
 
 
 @documents.get("/documents/<uuid:document_id>/preview-url")

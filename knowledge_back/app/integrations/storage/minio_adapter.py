@@ -114,6 +114,16 @@ def stat_object(object_key: str, *, bucket: str | None = None):
         raise StorageError("MinIO 中找不到该文件") from error
 
 
+def open_object(object_key: str, *, bucket: str | None = None, offset=0, length=0):
+    """Open an internal object stream; callers must close it and release the connection."""
+    try:
+        return _client().get_object(
+            bucket or bucket_name(), object_key, offset=offset, length=length
+        )
+    except Exception as error:
+        raise StorageError("无法读取 MinIO 文件") from error
+
+
 def read_object(object_key: str, *, bucket: str | None = None, max_size: int) -> bytes:
     response = None
     try:
