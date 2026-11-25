@@ -1,0 +1,9 @@
+{
+  "printWidth": 100,
+  "singleAttributePerLine": true,
+  "semi": true,
+  "tabWidth": 2,
+  "trailingComma": "es5",
+  "bracketSpacing": true,
+  "htmlWhitespaceSensitivity": "ignore"
+}

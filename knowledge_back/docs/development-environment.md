@@ -1,12 +1,14 @@
 # 开发环境说明
 
+> 2026-10-30 更新：已加入 MinIO 知识库文件对象存储、文档版本、预览下载、在线文本编辑和 PostgreSQL 索引 Worker。新环境使用根目录 `init.sql` 初始化数据库；前后端启动步骤以 [根目录 README](../../README.md) 为准，完整安装命令见 [install.md](../../install.md)。
+
 ## 1. 环境划分
 
 项目分为本地开发环境和服务器开发环境，采用前后端分离结构。前端项目目录为 `knowledge_front`，后端项目目录为 `knowledge_back`。两套环境使用相同的服务边界：Vue 前端、Flask API、PostgreSQL + pgvector、MinIO、异步索引 Worker、DeepSeek API 和阿里云百炼 Embedding API。环境差异通过环境变量、网络绑定、数据目录和密钥管理区分。
 
-当前仓库提供的是本地容器编排文件和服务器部署模板。服务器需要由部署人员在目标主机上执行，仓库本身不包含服务器密钥。
+当前仓库提供的是本地容器启动命令和服务器部署建议。服务器需要由部署人员在目标主机上执行，仓库本身不包含服务器密钥。
 
-当前仓库已经启动本机 PostgreSQL + pgvector 容器 `kbs-postgres`，并通过 AIStor 镜像单独启动了 `kbs-minio`。MinIO 不由 PostgreSQL Compose 文件管理，避免 Compose 与已存在的 AIStor 容器冲突。
+当前仓库使用 `kbs-postgres` 和 `kbs-minio` 两个独立容器。PostgreSQL 使用 pgvector 镜像，MinIO 使用 AIStor 镜像；两者均按 [install.md](../../install.md) 的命令启动。
 
 本次配置后的状态：
 
@@ -21,7 +23,7 @@
 
 ### 2.1 本地文档目录
 
-Markdown 文档导入目录固定为：
+知识库文件导入目录固定为：
 
 ```text
 /home/yigeoooo/文档/knowledge_doc
@@ -37,7 +39,7 @@ mkdir -p /home/yigeoooo/文档/knowledge_doc
 
 ### 2.2 本地服务
 
-`docker-compose.local.yml` 提供 PostgreSQL + pgvector。MinIO 使用 AIStor 镜像单独启动：
+PostgreSQL 和 MinIO 使用独立 Docker 容器启动，完整安装和初始化命令见 [install.md](../../install.md)：
 
 | 服务 | 地址 | 用途 |
 |---|---|---|
@@ -45,54 +47,12 @@ mkdir -p /home/yigeoooo/文档/knowledge_doc
 | MinIO API | `127.0.0.1:9000` | 原始 Markdown 对象存储 |
 | MinIO Console | `http://127.0.0.1:9001` | 本地对象管理 |
 
-启动：
-
-```bash
-cd knowledge_back
-docker compose --env-file .env.local -f docker-compose.local.yml up -d
-```
-
-启动或重建 MinIO（AIStor）：
-
-```bash
-cd knowledge_back
-mkdir -p /home/yigeoooo/minio/data
-docker pull quay.io/minio/aistor/minio:latest
-docker rm -f kbs-minio 2>/dev/null || true
-set -a
-. .env.local
-set +a
-docker run -dt \
-  -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
-  -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
-  -p 9000:9000 -p 9001:9001 \
-  -v /home/yigeoooo/project/knowledge_management_system/knowledge_back/docs/minio.license:/minio.license \
-  -v /home/yigeoooo/minio/data:/mnt/data \
-  --name kbs-minio \
-  quay.io/minio/aistor/minio:latest \
-  server /mnt/data --license /minio.license --console-address ":9001"
-```
-
-许可证文件必须存在于：
-
-```text
-/home/yigeoooo/project/knowledge_management_system/knowledge_back/docs/minio.license
-```
-
-该许可证文件已加入 `.gitignore`，不得提交到仓库。MinIO 数据持久化目录为 `/home/yigeoooo/minio/data`。
+许可证文件必须存在于 `knowledge_back/docs/minio.license`，该文件已加入 `.gitignore`，不得提交到仓库。
 
 查看状态：
 
 ```bash
-cd knowledge_back
-docker compose --env-file .env.local -f docker-compose.local.yml ps
-```
-
-停止服务：
-
-```bash
-cd knowledge_back
-docker compose --env-file .env.local -f docker-compose.local.yml down
+docker ps --filter name=kbs-postgres --filter name=kbs-minio
 ```
 
 停止 MinIO：
@@ -101,31 +61,17 @@ docker compose --env-file .env.local -f docker-compose.local.yml down
 docker stop kbs-minio
 ```
 
-删除 MinIO 容器不会删除 `/home/yigeoooo/minio/data` 中的数据；删除该目录才会清除对象数据。
+删除 MinIO 容器不会删除项目 `.runtime/minio-data` 中的数据；删除该目录才会清除对象数据。
 
-停止并删除 PostgreSQL 数据卷是破坏性操作，只能在确认不需要本地数据库数据时执行。该命令不会删除 MinIO 数据：
-
-```bash
-cd knowledge_back
-docker compose --env-file .env.local -f docker-compose.local.yml down -v
-```
-
-如需清空 MinIO 对象，必须在确认数据不再需要后单独删除 `/home/yigeoooo/minio/data`。
+删除 `kbs_postgres_data` 或 MinIO 数据目录是破坏性操作，只能在确认不需要本地数据时执行。
 
 ### 2.3 pgvector 验证
 
-首次创建 PostgreSQL 容器时，`docker/postgres/init/001-enable-extensions.sql` 会启用 `vector` 和 `pgcrypto` 扩展。验证命令：
+执行根目录 `init.sql` 初始化数据库时会启用 `vector` 和 `pgcrypto` 扩展。验证命令：
 
 ```bash
 docker exec kbs-postgres psql -U root -d knowledge_db \
   -c "SELECT extname FROM pg_extension WHERE extname IN ('vector', 'pgcrypto');"
-```
-
-如果数据库卷已经存在，初始化脚本不会再次执行，可以手动执行：
-
-```bash
-docker exec kbs-postgres psql -U root -d knowledge_db \
-  -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
 ```
 
 验证 MinIO API：
@@ -134,7 +80,11 @@ docker exec kbs-postgres psql -U root -d knowledge_db \
 curl -fsS http://127.0.0.1:9000/minio/health/live
 ```
 
-AIStor Console 地址为 `http://127.0.0.1:9001`。后端使用 `.env.local` 中的 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY` 和 `MINIO_BUCKET` 访问对象存储。
+AIStor Console 地址为 `http://127.0.0.1:9001`。后端使用 `.env.local` 中的 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY` 和 `MINIO_SECRET_KEY` 访问对象存储。`MINIO_BUCKET` 作为历史对象的兼容桶保留；创建知识库时会自动创建以知识库 UUID 派生的独立 Bucket，文档版本的 `minio_bucket` 保存实际使用的桶名。
+
+浏览器预览和下载文件统一使用同源的 `/api/v1/documents/file?token=...`。登录并通过页面权限校验后，API 才会生成限定到具体文件的签名链接，有效期沿用 `MINIO_URL_SECONDS`。后端通过内部 `MINIO_ENDPOINT` 流式读取文件，支持 PDF 和视频的 Range 请求；浏览器不再直接连接 MinIO。签名链接属于临时访问凭证，不要公开分享。
+
+本地沿用 Vite 的 `/api` 代理；服务器沿用 Nginx 的 `/api` 代理即可，无需为浏览器开放 `9000` 端口。该修复只涉及后端，拉取代码后重启后端即可生效。图片、视频索引时供外部 AI 服务读取的 URL 仍使用 `MINIO_PUBLIC_ENDPOINT`，与浏览器预览入口分别配置。
 
 ### 2.4 DeepSeek 和阿里云百炼配置
 
@@ -156,6 +106,13 @@ Input: [{"text": "..."}]
 API Key: DASHSCOPE_API_KEY
 ```
 
+图片和视频使用同一个接口，将输入项改为 `[{"image": "https://..."}]` 或
+`[{"video": "https://..."}]`。本项目 Worker 会为 MinIO 对象生成短时预签名 URL，
+因此 `MINIO_PUBLIC_ENDPOINT` 必须是 DashScope 服务可以访问的地址；`127.0.0.1` 只适合浏览器本机访问，不能作为云服务读取媒体的地址。
+文字查询仍使用 `[{"text": "..."}]`，模型返回的向量可以和图片、视频向量直接计算相似度。
+如果使用自建部署或 MaaS 网关，请将该网关实际的多模态 Embedding 路径配置到
+`DASHSCOPE_EMBEDDING_URL`；默认路径只适用于标准 DashScope API。
+
 调用方式：
 
 ```python
@@ -176,7 +133,7 @@ response = dashscope.MultiModalEmbedding.call(
 
 ### 3.1 推荐部署结构
 
-服务器上使用 Docker Compose 或 systemd 管理以下服务：
+服务器上使用 Docker 或 systemd 管理以下服务：
 
 ```text
 Nginx/Caddy

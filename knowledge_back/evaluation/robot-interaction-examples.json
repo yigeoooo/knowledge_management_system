@@ -1,0 +1,197 @@
+[
+  {
+    "name": "小维 · 初次问候",
+    "inputs": {
+      "task": "answer",
+      "question": "你好",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "chat",
+      "expected_status": "SUCCESS",
+      "reference_answer": "自然打招呼，可以介绍自己是小维，不要求先提供资料。",
+      "answer_points": [
+        "小维"
+      ],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 身份介绍",
+    "inputs": {
+      "task": "answer",
+      "question": "你叫什么名字？",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "chat",
+      "expected_status": "SUCCESS",
+      "reference_answer": "自称小维，简短介绍可以聊天和帮助查询资料。",
+      "answer_points": [
+        "小维"
+      ],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 感谢回应",
+    "inputs": {
+      "task": "answer",
+      "question": "谢谢你，帮大忙了",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "chat",
+      "expected_status": "SUCCESS",
+      "reference_answer": "自然回应感谢，不机械地要求查询知识库。",
+      "answer_points": [],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 下雨常识",
+    "inputs": {
+      "task": "answer",
+      "question": "为什么会下雨？",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "general",
+      "expected_status": "SUCCESS",
+      "reference_answer": "解释水蒸气凝结成水滴，水滴聚集后下落形成雨。",
+      "answer_points": [
+        "水蒸气"
+      ],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 实时天气",
+    "inputs": {
+      "task": "answer",
+      "question": "今天天气怎么样？",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "realtime",
+      "expected_status": "SUCCESS",
+      "reference_answer": "明确尚不能获取实时天气，建议查看天气预报；不编造温度或晴雨。",
+      "answer_points": [
+        "天气预报"
+      ],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 混合业务问题",
+    "inputs": {
+      "task": "answer",
+      "question": "你好，套票多少钱？",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "knowledge",
+      "expected_status": null,
+      "reference_answer": "识别为业务问题，查询当前知识库票价，不能只寒暄或编造价格。",
+      "answer_points": [],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 业务历史追问",
+    "inputs": {
+      "task": "answer",
+      "question": "那我们八个人一共多少钱？",
+      "robot": true,
+      "context": {
+        "turns": [
+          {
+            "question": "我们有8个人，想了解科普游套票。",
+            "answer": "你想了解价格还是项目内容？"
+          }
+        ]
+      }
+    },
+    "reference": {
+      "expected_answer_kind": "knowledge",
+      "expected_status": null,
+      "reference_answer": "结合历史中的人数和项目查资料回答，保留适用条件；旧机器人答案不作为证据。",
+      "answer_points": [],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 闲聊历史记忆",
+    "inputs": {
+      "task": "answer",
+      "question": "你还记得我叫什么吗？",
+      "robot": true,
+      "context": {
+        "turns": [
+          {
+            "question": "我叫小林。",
+            "answer": "你好小林，我是小维。"
+          }
+        ]
+      }
+    },
+    "reference": {
+      "expected_answer_kind": "chat",
+      "expected_status": "SUCCESS",
+      "reference_answer": "根据本会话用户自述回答叫小林。",
+      "answer_points": [
+        "小林"
+      ],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  },
+  {
+    "name": "小维 · 雨天业务规则",
+    "inputs": {
+      "task": "answer",
+      "question": "景区雨天是否开放？",
+      "robot": true,
+      "context": {}
+    },
+    "reference": {
+      "expected_answer_kind": "knowledge",
+      "expected_status": null,
+      "reference_answer": "查询知识库中的开放规则，不能误当成天气查询或以一般常识保证开放。",
+      "answer_points": [],
+      "expected_document_ids": [],
+      "expected_documents": [],
+      "source_notes": "自然交流与分流验收样例；业务题需管理员按本知识库补充参考资料。",
+      "forbidden_points": []
+    }
+  }
+]

@@ -1,0 +1,17 @@
+# Build and distribution output from either platform, including hand-copied packages.
+*.apk
+*.aab
+*.apks
+*.ipa
+*.app/
+*.xcarchive/
+*.dSYM/
+*.dSYM.zip
+*.xcresult/
+build/
+output/
+DerivedData/
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
