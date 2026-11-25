@@ -22,7 +22,6 @@ export function syncPages() {
   removePages.forEach(remove => remove())
   removePages = session.pages.map(p => router.addRoute({
     name: p.code, path: p.route_path, component: pages[p.component_key as PageKey].view,
-    props: p.component_key === 'QALogs' ? { allowExport: false, stepped: true } : undefined,
     meta: { title: p.name, key: p.component_key },
   }))
   lastPages = signature

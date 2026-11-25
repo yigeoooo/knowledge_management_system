@@ -1,6 +1,6 @@
 # 跨维知识 App
 
-Android 和 iOS 共用 Vue 3 手机界面，通过 Capacitor 安装到手机。项目位于 `knowledge_mobile/`，构建时从同一仓库的 `knowledge_front/` 复用业务页面和品牌素材。下列命令在 macOS 或 Linux 终端运行，除特别说明外，工作目录均为 `knowledge_mobile/`。
+Android 和 iOS 共用 Vue 3 手机界面，通过 Capacitor 安装到手机。项目位于 `knowledge_mobile/`，构建时从同一仓库的 `knowledge_front/` 复用会话 API、消息展示组件、基础样式和品牌素材。手机页面与 Vant 交互在 `knowledge_mobile/src/` 中维护。下列命令在 macOS 或 Linux 终端运行，除特别说明外，工作目录均为 `knowledge_mobile/`。
 
 ## 本地启动
 

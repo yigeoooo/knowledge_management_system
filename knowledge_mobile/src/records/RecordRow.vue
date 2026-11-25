@@ -1,8 +1,5 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ActionSheet as VanActionSheet, Icon as VanIcon } from 'vant'
-import 'vant/es/action-sheet/style'
-import 'vant/es/icon/style'
 
 type RowAction = { name: string; run: () => unknown; disabled?: boolean; color?: string }
 const props = defineProps<{

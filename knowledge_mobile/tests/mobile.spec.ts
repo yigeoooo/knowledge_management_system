@@ -81,7 +81,7 @@ for (const role of ['admin','reader']) {
       await expect(page.locator('.conversation-answer')).toContainText(turn.answer)
       await expect(page.getByRole('textbox',{name:'你的问题'})).toBeInViewport()
     }
-    await page.getByRole('button',{name:'全部功能'}).click()
+    await page.getByRole('tab',{name:'全部功能'}).click()
     await expect(page.locator('.features a')).toHaveCount(role === 'admin' ? 11 : 2)
     await page.getByRole('button',{name:'关闭菜单'}).click()
     for (const [,path] of routes.slice(11)) {
@@ -92,3 +92,52 @@ for (const role of ['admin','reader']) {
     expect(errors).toEqual([])
   })
 }
+
+
+test('手机筛选回显选中值，长标签与结果在窄屏可见', async ({ page }, info) => {
+  const adminPages = routes.slice(3,6).map(([key,path,name]) => ({
+    component_key:key,route_path:path,name,code:key,page_type:'menu',is_visible:true,sort_order:0,
+  }))
+  const kb = '设备安装与维护知识库'
+  const requests: URL[] = []
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url())
+    requests.push(url)
+    let data: unknown = {items:[],total:0}
+    if (url.pathname.includes('/auth/')) data = {user:{id:'fixture',display_name:'测试'},pages:adminPages,access_token:'fixture'}
+    if (url.pathname.endsWith('/knowledge-base-options')) data = {items:[{id:'base-1',name:kb}]}
+    return route.fulfill({json:{code:0,data}})
+  })
+  for (const width of [320,375,430]) {
+    await page.setViewportSize({width,height:812})
+    await page.goto('/#/robots')
+    await page.getByRole('button',{name:'知识库，全部知识库'}).click()
+    await page.getByRole('button',{name:kb,exact:true}).click()
+    await page.getByRole('button',{name:'状态，全部状态'}).click()
+    await page.getByRole('button',{name:'停用',exact:true}).click()
+    for (const value of [kb,'停用']) {
+      const label = page.locator('.choice-trigger span').filter({hasText:value})
+      await expect(label).toBeInViewport()
+      expect(await label.evaluate(el => el.clientWidth > 24 && el.scrollWidth <= el.clientWidth)).toBe(true)
+    }
+    const lastQuery = () => requests.filter(u=>u.pathname.endsWith('/robots')).at(-1)?.searchParams
+    await expect.poll(() => [lastQuery()?.get('knowledge_base_id'),lastQuery()?.get('status')]).toEqual(['base-1','disabled'])
+    if (width === 375) await page.screenshot({path:info.outputPath('robot-filters.png')})
+    await page.getByRole('button',{name:'重置',exact:true}).click()
+    await expect(page.getByRole('button',{name:'知识库，全部知识库'})).toBeVisible()
+    await expect.poll(() => lastQuery()?.has('status') || lastQuery()?.has('knowledge_base_id')).toBe(false)
+    for (const [path,label,status] of [['users','显示名称','账号状态'],['roles','角色名称或编码','角色状态']]) {
+      await page.goto('/#/'+path)
+      const input = page.getByPlaceholder('搜索'+label)
+      await expect(input).toBeVisible()
+      expect(await input.evaluate(el => el.clientWidth)).toBeGreaterThan(150)
+      await input.fill('甲')
+      await page.getByRole('button',{name:'查询',exact:true}).click()
+      await page.getByRole('button',{name:status+'，全部状态'}).click()
+      await page.getByRole('button',{name:'启用',exact:true}).click()
+      await expect(page.getByRole('button',{name:status+'，启用'})).toBeInViewport()
+      await expect.poll(() => requests.some(u=>u.pathname.endsWith('/'+path) && u.searchParams.get('q') === '甲' && u.searchParams.get('status') === 'active')).toBe(true)
+      expect(await page.locator('.phone-content').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+    }
+  }
+})
