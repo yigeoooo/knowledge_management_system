@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 type RowAction = { name: string; run: () => unknown; disabled?: boolean; color?: string }
 const props = defineProps<{
-  title: string; subtitle?: string; badge?: string; inactive?: boolean
+  title: string; icon?: string; avatar?: boolean; subtitle?: string; badge?: string; inactive?: boolean
   actions?: RowAction[]; open?: () => unknown
 }>()
 const sheet = ref(false)
@@ -14,7 +14,10 @@ function choose(action: { name?: string }) {
 }
 </script>
 <template>
-  <article class="record-row">
+  <article :class="['record-row', { 'has-mark': icon || avatar }]">
+    <span v-if="icon || avatar" class="record-mark" :class="{ portrait: avatar }" aria-hidden="true">
+      <template v-if="avatar">{{ title.slice(0,1) }}</template><van-icon v-else :name="icon" />
+    </span>
     <div class="record-heading">
       <component :is="open ? 'button' : 'div'" class="record-identity" @click="open?.()">
         <strong>{{ title }}</strong><span v-if="subtitle">{{ subtitle }}</span>

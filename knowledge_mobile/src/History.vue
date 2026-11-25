@@ -4,6 +4,7 @@ import { api } from '@web/lib/session'
 import { type Conversation, type ConversationPage, type Turn, type TurnPage } from '@web/lib/conversations'
 import ConversationTurns from '@web/components/ConversationTurns.vue'
 import TraceDetailsDialog from '@web/components/TraceDetailsDialog.vue'
+import PageHeader from './PageHeader.vue'
 import ChoiceSheet from './ChoiceSheet.vue'
 const states = [{value:'',text:'全部历史（含已删除）'}, {value:'false',text:'未删除'}, {value:'true',text:'用户已删除'}]
 const traceTurn = ref<Turn | null>(null)
@@ -68,9 +69,8 @@ onBeforeUnmount(() => { disposed = true; ownerGeneration++; historyGeneration++;
 </script>
 
 <template>
-  <header class="record-page-title"><h1>问答日志</h1>
+  <PageHeader title="问答日志" />
     <div class="history-segment"><van-button v-for="mode in ['WEB','ROBOT']" :key="mode" size="small" :aria-pressed="source === mode" @click="source = mode">{{ mode === 'WEB' ? '用户对话' : '机器人对话' }}</van-button></div>
-  </header>
   <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="history-error" />
   <el-button v-if="selected" class="history-back" @click="detail ? clearDetails() : backToOwners()">
     {{ detail ? '返回会话列表' : source === 'WEB' ? '返回用户列表' : '返回机器人列表' }}

@@ -15,7 +15,7 @@ for (const role of ['admin','reader']) {
       pages: routes.filter(([key]) => role === 'admin' || ['KnowledgeQA','Profile'].includes(key)).map(([key,path,name],i) =>
         ({component_key:key,route_path:path,name,code:key,page_type:'menu',is_visible:true,sort_order:i})) }
     const conversation = {id:'cid',title:'设备启动说明',knowledge_base_id:'kb',knowledge_base_status:'active',turn_count:1,last_turn_no:1}
-    const turn = {id:'tid',question:'如何启动？',answer:'请检查电源。',status:'SUCCESS',sources:[],created_at:new Date().toISOString()}
+    const turn = {id:'tid',question:'如何启动？',answer:'启动设备前，请先检查电源和急停按钮。\n\n1. 确认设备接地，电源指示灯常亮。\n2. 释放急停按钮，等待控制器完成自检。\n3. 在控制面板选择启动，并确认运行状态。',status:'SUCCESS',sources:[],created_at:new Date().toISOString()}
     const errors: string[] = []
     page.on('pageerror',e => errors.push(e.message))
     await page.route('**/api/v1/**', async route => {
@@ -26,6 +26,11 @@ for (const role of ['admin','reader']) {
         if (!authenticated) return route.fulfill({status:401,json:{code:401,message:'请登录'}})
         data = identity
       } else if (path.endsWith('/dashboard')) data = {user_count:8,robot_count:2}
+      else if (path.endsWith('/robots')) data = {items:[
+        {id:'r1',name:'一号巡检机器人',serial_no:'DX-INS-001',status:'active',knowledge_base_name:'设备安装与维护',default_location_name:'成都'},
+        {id:'r2',name:'接待机器人',serial_no:'DX-RCP-002',status:'active',knowledge_base_name:'展厅接待手册',default_location_name:'上海'},
+        {id:'r3',name:'调试设备',serial_no:'DX-LAB-003',status:'disabled',knowledge_base_name:'实验室操作规程',default_location_name:'深圳'}
+      ],total:3}
       else if (path.endsWith('/users')) data = {items:[
         {id:'fixture',display_name:'林川',username:'admin',role_name:'管理员',status:'active'},
         {id:'reader',display_name:'周晨',username:'reader',role_name:'普通用户',status:'active'},
@@ -46,6 +51,11 @@ for (const role of ['admin','reader']) {
     if (role === 'admin') {
       await expect(page.getByRole('heading',{name:'林川的工作台'})).toBeVisible()
       await page.screenshot({path:info.outputPath('workbench.png')})
+      await page.getByRole('link',{name:/机器人管理/}).click()
+      await expect(page.getByText('DX-INS-001')).toBeVisible()
+      await page.screenshot({path:info.outputPath('robots.png')})
+      await page.getByRole('button',{name:'返回上一页'}).click()
+      await expect(page.getByRole('heading',{name:'林川的工作台'})).toBeVisible()
       await page.getByRole('link',{name:/用户管理/}).click()
       const more = page.getByRole('button',{name:'林川的操作'})
       for (const width of [320,390,900]) {
@@ -67,7 +77,7 @@ for (const role of ['admin','reader']) {
       await page.goto('/#/qa-logs')
       await page.locator('.owner-item').click()
       await page.locator('.audit-conversation').click()
-      await expect(page.locator('.conversation-answer')).toContainText(turn.answer)
+      await expect(page.locator('.conversation-answer')).toContainText('请先检查电源')
       await expect(page.getByRole('button',{name:/导出/})).toHaveCount(0)
       await page.getByRole('button',{name:'返回会话列表'}).click()
       await expect(page.locator('.audit-conversation')).toBeVisible()
@@ -76,11 +86,12 @@ for (const role of ['admin','reader']) {
     } else {
       await page.getByRole('button',{name:'展开历史侧栏'}).click()
       await page.locator('.history-open').click()
-      await expect(page.locator('.conversation-answer')).toContainText(turn.answer)
+      await expect(page.locator('.conversation-answer')).toContainText('请先检查电源')
       await page.reload()
-      await expect(page.locator('.conversation-answer')).toContainText(turn.answer)
+      await expect(page.locator('.conversation-answer')).toContainText('请先检查电源')
       await expect(page.getByRole('textbox',{name:'你的问题'})).toBeInViewport()
     }
+    if (role === 'reader') await page.screenshot({path:info.outputPath('chat.png')})
     await page.getByRole('tab',{name:'全部功能'}).click()
     await expect(page.locator('.features a')).toHaveCount(role === 'admin' ? 11 : 2)
     await page.getByRole('button',{name:'关闭菜单'}).click()
@@ -123,7 +134,9 @@ test('手机筛选回显选中值，长标签与结果在窄屏可见', async ({
     const lastQuery = () => requests.filter(u=>u.pathname.endsWith('/robots')).at(-1)?.searchParams
     await expect.poll(() => [lastQuery()?.get('knowledge_base_id'),lastQuery()?.get('status')]).toEqual(['base-1','disabled'])
     if (width === 375) await page.screenshot({path:info.outputPath('robot-filters.png')})
-    await page.getByRole('button',{name:'重置',exact:true}).click()
+    await expect(page.getByText('没有符合条件的记录')).toBeVisible()
+    await page.getByRole('button',{name:'清除筛选',exact:true}).click()
+    await expect(page.getByText('还没有机器人')).toBeVisible()
     await expect(page.getByRole('button',{name:'知识库，全部知识库'})).toBeVisible()
     await expect.poll(() => lastQuery()?.has('status') || lastQuery()?.has('knowledge_base_id')).toBe(false)
     for (const [path,label,status] of [['users','显示名称','账号状态'],['roles','角色名称或编码','角色状态']]) {

@@ -284,14 +284,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <RecordPage title="角色管理" list-title="角色列表" create-label="新增角色" notice="停用角色后，其成员将无法登录。超级管理员角色始终启用。"
+  <RecordPage title="角色管理" list-title="角色列表" create-label="新增角色"
+    empty-text="还没有角色" empty-icon="shield-o" :filtered="!!(appliedFilters.q || appliedFilters.status)" @reset="resetFilters"
     :total="total" :page="page" :size="pageSize" :sizes="[10, 20, 50, 100]" :loading="loading" :error="listError" :busy="!!actionId"
     @create="openEditor()" @refresh="loadRoles" @page="page = $event; loadRoles()" @size="pageSize = $event; resizePage()">
     <template #filters>
       <RecordFilters v-model:query="filters.q" v-model:status="filters.status"
         placeholder="搜索角色名称或编码" status-label="角色状态" :maxlength="100" @search="search" @reset="resetFilters" />
     </template>
-    <RecordRow v-for="row in rows" :key="row.id" :title="row.name" :subtitle="row.code"
+    <RecordRow icon="shield-o" v-for="row in rows" :key="row.id" :title="row.name" :subtitle="row.code"
       :badge="row.status === 'active' ? '启用' : '停用'" :inactive="row.status !== 'active'"
       :actions="[
         { name:'编辑', run:() => openEditor(row), disabled:!!actionId },

@@ -15,6 +15,7 @@ const rows = ref<Record<string, unknown>[]>([]);
 const total = ref(0);
 const page = ref(1);
 const query = ref("");
+const filtered = ref(false);
 const status = ref("");
 const loading = ref(false);
 const error = ref("");
@@ -22,6 +23,7 @@ let generation = 0;
 
 async function load() {
   const current = ++generation;
+  filtered.value = Boolean(query.value.trim() || status.value);
   const path = route.path;
   loading.value = true;
   error.value = "";
@@ -84,7 +86,7 @@ onMounted(load);
 
 <template>
   <RecordPage :title="config.title" list-title="记录" :total="total" :page="page" :size="20" :loading="loading" :error="error"
-    @refresh="load" @page="page = $event; load()">
+    :filtered="filtered" @reset="query = ''; status = ''; search()" @refresh="load" @page="page = $event; load()">
     <template #filters>
       <RecordFilters :placeholder="config.search" v-model:query="query" v-model:status="status" :status-label="config.status ? '状态' : undefined"
         @search="search" @reset="query = ''; status = ''; search()" />

@@ -259,14 +259,15 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
 </script>
 
 <template>
-  <RecordPage title="机器人管理" list-title="机器人列表" create-label="注册机器人" notice="停用后，机器人将无法调用问答接口，历史请求仍可查看。"
+  <RecordPage title="机器人管理" list-title="机器人列表" create-label="注册机器人"
+    empty-text="还没有机器人" empty-icon="desktop-o" :filtered="!!(applied.q || applied.status || applied.knowledge_base_id)" @reset="resetFilters"
     :total="total" :page="page" :size="pageSize" :sizes="[20, 50, 100]" :loading="loading" :error="listError" :busy="!!actionId"
     @create="openEditor()" @refresh="loadRobots" @page="page = $event; loadRobots()" @size="pageSize = $event; resizePage()">
     <template #filters>
       <RecordFilters v-model:query="filters.q" v-model:status="filters.status" v-model:base="filters.knowledge_base_id" :bases="baseOptions"
         placeholder="搜索序列号或名称" status-label="状态" :maxlength="200" @search="search" @reset="resetFilters" />
     </template>
-    <RecordRow v-for="row in rows" :key="row.id" :title="row.name || '未命名机器人'" :subtitle="row.serial_no"
+    <RecordRow icon="desktop-o" v-for="row in rows" :key="row.id" :title="row.name || '未命名机器人'" :subtitle="row.serial_no"
       :badge="row.status === 'active' ? '启用' : '停用'" :inactive="row.status !== 'active'" :open="() => showDetails(row)"
       :actions="[
         { name:'详情', run:() => showDetails(row) },

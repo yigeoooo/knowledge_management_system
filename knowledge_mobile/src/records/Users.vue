@@ -352,13 +352,14 @@ onBeforeUnmount(() => {
 
 <template>
   <RecordPage title="用户管理" list-title="用户列表" create-label="新增用户"
+    empty-text="还没有用户" empty-icon="friends-o" :filtered="!!(appliedFilters.q || appliedFilters.status)" @reset="resetFilters"
     :total="total" :page="page" :size="pageSize" :sizes="[10, 20, 50, 100]" :loading="loading" :error="listError" :busy="!!actionId"
     @create="openEditor()" @refresh="loadUsers" @page="page = $event; loadUsers()" @size="pageSize = $event; resizePage()">
     <template #filters>
       <RecordFilters v-model:query="filters.q" v-model:status="filters.status"
         placeholder="搜索显示名称" status-label="账号状态" :maxlength="100" @search="search" @reset="resetFilters" />
     </template>
-    <RecordRow v-for="row in rows" :key="row.id" :title="row.display_name" :subtitle="row.username"
+    <RecordRow avatar v-for="row in rows" :key="row.id" :title="row.display_name" :subtitle="row.username"
       :badge="row.status === 'active' ? '启用' : '停用'" :inactive="row.status !== 'active'" :open="() => showDetails(row)"
       :actions="[
         { name:'详情', run:() => showDetails(row), disabled:!!actionId },

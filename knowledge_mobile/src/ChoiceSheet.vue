@@ -17,7 +17,8 @@ function choose(value: string) {
   <button type="button" class="choice-trigger" :class="{ chosen: !!modelValue }" :disabled="disabled"
     :aria-label="label + '，' + (selected?.text || placeholder)" aria-haspopup="dialog" :aria-expanded="open"
     @click="query = ''; open = true">
-    <span>{{ selected?.text || placeholder }}</span><van-icon name="arrow-down" />
+    <slot name="value" :text="selected?.text || placeholder"><span>{{ selected?.text || placeholder }}</span></slot>
+    <van-icon name="arrow-down" />
   </button>
   <van-action-sheet v-model:show="open" teleport="body" :title="label" cancel-text="取消" :closeable="false" class="choices-sheet">
     <van-search v-if="searchable" v-model="query" :placeholder="'搜索' + label" :aria-label="'搜索' + label" />

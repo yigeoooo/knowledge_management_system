@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SignOutButton from './SignOutButton.vue'
 import { session } from '@web/lib/session'
 </script>
 <template>
@@ -8,5 +9,6 @@ import { session } from '@web/lib/session'
     <van-cell-group><van-cell title="用户名" :value="session.user?.username" /><van-cell title="角色" :value="session.user?.role_name" /></van-cell-group>
     <van-cell-group title="已授权页面"><div class="profile-pages"><van-tag v-for="page in session.pages" :key="page.code" plain>{{ page.name }}</van-tag></div></van-cell-group>
     <p class="record-note">如需修改账号信息或密码，请联系平台管理员。</p>
+    <SignOutButton />
   </section>
 </template>
