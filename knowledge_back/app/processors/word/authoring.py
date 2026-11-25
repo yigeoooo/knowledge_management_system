@@ -12,6 +12,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
 from ...core.http import ApiError
+from .numbering import numbering_element
 from .styles import (
     ALIGNMENTS,
     color,
@@ -266,7 +267,7 @@ def _inline(paragraph, nodes):
 
 
 def _numbering(document, ordered, start, level, list_type=None):
-    numbering = document.part.numbering_part.element
+    numbering = numbering_element(document.part, create=True)
     existing = [
         int(item.get(qn("w:abstractNumId"))) for item in numbering.findall(qn("w:abstractNum"))
     ]

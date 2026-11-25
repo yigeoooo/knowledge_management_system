@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createUuid } from "../lib/uuid";
 import {
-  createUniver, defaultTheme, LocaleType,
+  createUniver, defaultTheme, getPlainText, LocaleType,
   HorizontalAlign, VerticalAlign, WrapStrategy, BorderStyleTypes, TextDecoration,
 } from "@univerjs/presets";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
@@ -285,9 +285,16 @@ function fromUniverWorkbook(snapshot: any, source?: ExcelWorkbook): ExcelWorkboo
     for (const [row, columns] of Object.entries(sheet.cellData || {})) {
       for (const [column, payload] of Object.entries((columns || {}) as Record<string, any>)) {
         const cell = payload as any;
-        if (cell.v == null && !cell.f && !cell.s) continue;
+        if (!cell) continue;
+        // In-cell edits can move text from v into Univer's rich-text document.
+        // Its final CRLF is a document terminator; internal CRs are line breaks.
+        const richText = cell.p?.body?.dataStream;
+        const value = typeof richText === "string" && !cell.f
+          ? getPlainText(richText).replace(/\r/g, "\n")
+          : cell.v ?? null;
+        if (value == null && !cell.f && !cell.s) continue;
         cells[`${row},${column}`] = {
-          value: cell.v ?? null,
+          value,
           formula: cell.f || null,
           style: fromUniverStyle(typeof cell.s === "string" ? snapshot.styles?.[cell.s] : cell.s),
         };
@@ -393,6 +400,15 @@ function initialize() {
 function snapshot() {
   return workbookApi ? fromUniverWorkbook(workbookApi.save(), props.workbook) : props.workbook;
 }
+async function snapshotForSave(): Promise<ExcelWorkbook> {
+  if (!initialized || !workbookApi) throw new Error("表格正在加载，请稍后保存");
+  // The edit overlay holds uncommitted text until Enter or endEditingAsync.
+  // Clicking our save button does not reliably commit it before save().
+  if (workbookApi.isCellEditing() && !(await workbookApi.endEditingAsync(true))) {
+    throw new Error("当前单元格尚未完成编辑，请确认内容后重试");
+  }
+  return snapshot();
+}
 function columnIndex(column: string) {
   let value = 0;
   for (const char of column.toUpperCase()) value = value * 26 + char.charCodeAt(0) - 64;
@@ -418,7 +434,7 @@ function destroy() {
   univerAPI = null;
   univer = null;
 }
-defineExpose({ snapshot, fullscreen, displayColumnWidth });
+defineExpose({ snapshot, snapshotForSave, fullscreen, displayColumnWidth });
 watch(() => props.workbook, initialize, { deep: false });
 onMounted(initialize);
 onBeforeUnmount(destroy);

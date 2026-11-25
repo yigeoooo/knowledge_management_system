@@ -172,6 +172,52 @@ test('existing Excel drafts with numeric style enums can still be saved', async 
   })
 })
 
+for (const mode of ['enter', 'direct-save', 'multiline']) {
+test(`editing an existing price preserves its text after save and reopen (${mode})`, async ({ page, request }) => {
+  await connect(page, request)
+  const title = `单元格编辑回归-${mode}`
+  const source = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(source, XLSX.utils.aoa_to_sheet([
+    ['套票产品', '产品内容', '价格'], ['地质奇幻游', '门票和游船', '138元/人'],
+    ['地质户外游', '户外项目', '168元/人'],
+  ]), 'Sheet1')
+  XLSX.utils.book_append_sheet(source, XLSX.utils.aoa_to_sheet([['其他工作表原文']]), 'Sheet2')
+  await page.goto('/documents')
+  await page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: `${title}.xlsx`, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: XLSX.write(source, { type: 'buffer', bookType: 'xlsx' }),
+  })
+  await page.getByRole('button', { name: '开始上传', exact: true }).click()
+  await page.getByRole('row').filter({ hasText: title }).getByRole('button', { name: '预览', exact: true }).click()
+  await page.getByRole('button', { name: '在线编辑', exact: true }).click()
+  await selectFirstCell(page, '.excel-edit-panel')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('F2')
+  await page.keyboard.press('End')
+  await page.keyboard.insertText('（含体验）')
+  let expected = '138元/人（含体验）'
+  if (mode === 'multiline') {
+    await page.keyboard.press('Alt+Enter')
+    await page.keyboard.insertText('第二行说明')
+    expected += '\n第二行说明'
+  }
+  if (mode !== 'direct-save') {
+    await page.keyboard.press('Enter')
+    await expect.poll(() => formulaValue(page, '.excel-edit-panel', '1,2')).toBe(expected)
+  }
+  const saving = page.waitForResponse(r => r.url().endsWith('/excel-content') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '保存为新版本', exact: true }).click()
+  const saved = await saving
+  expect(saved.status(), await saved.text()).toBe(201)
+  await expect.poll(() => formulaValue(page, '.excel-preview', '1,2')).toBe(expected)
+  await expect.poll(() => formulaValue(page, '.excel-preview', '2,2')).toBe('168元/人')
+  await expect.poll(() => formulaValue(page, '.excel-preview', '0,0', 1)).toBe('其他工作表原文')
+})
+}
+
 test('uploading text renamed to XLSX explains how to save a real workbook', async ({ page, request }) => {
   await connect(page, request)
   await page.goto('/documents')

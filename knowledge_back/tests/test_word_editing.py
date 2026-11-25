@@ -8,6 +8,7 @@ import test_document_creation as creation_tests
 from docx import Document as Docx
 from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.shared import Cm, Pt, RGBColor
 from test_document_creation import create
@@ -86,6 +87,35 @@ def test_editor_snapshot_round_trip_and_external_edit_invalidation():
     doc.save(output)
     imported = word_content(output.getvalue())
     assert imported["content"][0]["content"][0]["text"] == "在桌面 Word 中修改过"
+
+
+@pytest.mark.parametrize("add_list", [False, True])
+def test_edit_docx_without_optional_numbering_part(add_list):
+    doc = Docx()
+    doc.add_paragraph("景区介绍")
+    doc.sections[0].header.paragraphs[0].text = "保留页眉"
+    for rid, relation in list(doc.part.rels.items()):
+        if relation.reltype == RT.NUMBERING:
+            del doc.part.rels[rid]
+    source = BytesIO()
+    doc.save(source)
+    original = source.getvalue()
+    content = word_content(original)
+    content["content"][0]["content"][0]["text"] = "修改后的景区介绍"
+    if add_list:
+        content["content"].append({"type": "orderedList", "content": [
+            {"type": "listItem", "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "游览路线"},
+            ]}]},
+        ]})
+    saved = document_bytes("docx", content, source=original)
+    assert word_content(saved) == content
+    reopened = Docx(BytesIO(saved))
+    assert reopened.paragraphs[0].text == "修改后的景区介绍"
+    assert reopened.sections[0].header.paragraphs[0].text == "保留页眉"
+    if add_list:
+        assert reopened.part.part_related_by(RT.NUMBERING).element.xpath("./w:num")
+    assert Docx(BytesIO(original)).paragraphs[0].text == "景区介绍"
 
 
 def test_unsupported_content_is_explicit_instead_of_silently_discarded():

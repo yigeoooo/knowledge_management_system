@@ -120,7 +120,7 @@ const emptyWorkbook = (): ExcelWorkbook => ({
 });
 const excelWorkbook = ref<ExcelWorkbook>(emptyWorkbook());
 const excelLatest = ref<ExcelWorkbook>(excelWorkbook.value);
-const excelEditor = ref<{ snapshot(): ExcelWorkbook } | null>(null);
+const excelEditor = ref<{ snapshot(): ExcelWorkbook; snapshotForSave(): Promise<ExcelWorkbook> } | null>(null);
 const editBaseId = ref("");
 const editBaseline = ref("");
 const wordReady = ref(false);
@@ -584,7 +584,8 @@ async function saveEdit(): Promise<boolean> {
       });
       versionId = result.version.id;
     } else if (isExcel.value) {
-      excelLatest.value = excelEditor.value?.snapshot() || excelLatest.value;
+      if (!excelEditor.value) throw new Error("表格正在加载，请稍后保存");
+      excelLatest.value = await excelEditor.value.snapshotForSave();
       const body = { base_version_id: editBaseId.value, workbook: excelLatest.value };
       const payload = JSON.stringify(body);
       if (!saveAttempt || saveAttempt.payload !== payload)

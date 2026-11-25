@@ -62,7 +62,7 @@ try {
 } catch { draftError.value = "无法恢复浏览器草稿，请重新填写内容。"; }
 
 const wordEditor = ref<{ reset(content: JSONContent): void; fullscreen(): void } | null>(null);
-const excelEditor = ref<{ fullscreen(): void; snapshot(): ExcelWorkbook } | null>(null);
+const excelEditor = ref<{ fullscreen(): void; snapshotForSave(): Promise<ExcelWorkbook> } | null>(null);
 function updateWord(content: JSONContent, text: string) {
   wordContent.value = content;
   wordText.value = text;
@@ -147,18 +147,21 @@ async function save() {
     if (!saved.value && !saving.value) error.value = "请填写文档标题和正文，并选择知识库。";
     return false;
   }
-  if (format.value === "xlsx") excelLatest.value = excelEditor.value?.snapshot() || excelLatest.value;
-  const body = {
-    knowledge_base_id: selectedBase.value,
-    title: title.value.trim(),
-    format: format.value,
-    content: format.value === "md" ? markdown.value : format.value === "docx" ? wordContent.value : excelLatest.value,
-  };
-  const signature = JSON.stringify(body);
-  if (attempt?.signature !== signature) attempt = { signature, id: requestId() };
   saving.value = true;
   error.value = "";
   try {
+    if (format.value === "xlsx") {
+      if (!excelEditor.value) throw new Error("表格正在加载，请稍后保存");
+      excelLatest.value = await excelEditor.value.snapshotForSave();
+    }
+    const body = {
+      knowledge_base_id: selectedBase.value,
+      title: title.value.trim(),
+      format: format.value,
+      content: format.value === "md" ? markdown.value : format.value === "docx" ? wordContent.value : excelLatest.value,
+    };
+    const signature = JSON.stringify(body);
+    if (attempt?.signature !== signature) attempt = { signature, id: requestId() };
     const result = await api<SavedDocument>("/documents/create", { method: "POST", body: JSON.stringify({ ...body, request_id: attempt.id }), timeoutMs: 120000 });
     if (disposed) return false;
     saved.value = result;

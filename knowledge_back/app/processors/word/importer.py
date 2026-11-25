@@ -17,6 +17,7 @@ from docx.text.hyperlink import Hyperlink
 from lxml import etree
 
 from ...core.http import ApiError
+from .numbering import numbering_element
 from .styles import ALIGNMENTS
 
 SNAPSHOT = "/customXml/kbs-editor.xml"
@@ -69,10 +70,11 @@ def load_word(content):
 
 def _fingerprint(document):
     # External Word edits invalidate our snapshot, including style/numbering edits.
+    numbering = numbering_element(document.part)
     values = [
         document.element.xml,
         document.styles.element.xml,
-        document.part.numbering_part.element.xml,
+        numbering.xml if numbering is not None else "",
     ]
     return hashlib.sha256("\n".join(values).encode()).hexdigest()
 
@@ -202,7 +204,9 @@ def numbering(paragraph):
     if numpr is None or numpr.numId is None or numpr.numId.val == 0:
         return None
     num_id, level = numpr.numId.val, numpr.ilvl.val if numpr.ilvl is not None else 0
-    root = paragraph.part.numbering_part.element
+    root = numbering_element(paragraph.part)
+    if root is None:
+        unsupported("缺少定义的列表编号")
     nums = root.xpath(f'w:num[@w:numId="{num_id}"]')
     if not nums:
         unsupported("无法识别的编号")
