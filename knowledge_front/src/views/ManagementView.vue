@@ -216,7 +216,11 @@ watch(
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-    <el-table v-loading="loading" :data="rows" style="width: 100%" :min-height="340" :row-class-name="rowClass" @row-click="openDetail">
+    <section v-if="$slots.records" v-loading="loading" class="mobile-record-list">
+      <slot name="records" :rows="rows" :columns="config.columns" :format="format" :status-text="statusText" />
+      <el-empty v-if="!loading && !rows.length" :description="error ? '加载失败，请重试' : '暂无匹配记录'" :image-size="48" />
+    </section>
+    <el-table v-else v-loading="loading" :data="rows" style="width: 100%" :min-height="340" :row-class-name="rowClass" @row-click="openDetail">
       <el-table-column v-for="column in config.columns" :key="column.prop" :prop="column.prop" :label="column.label" :width="column.width" :min-width="column.width || 150" show-overflow-tooltip>
         <template #default="{ row }">
           <el-tag v-if="column.prop === 'status'" :type="statusType(row.status)" effect="light">{{ statusText(row.status) }}</el-tag>

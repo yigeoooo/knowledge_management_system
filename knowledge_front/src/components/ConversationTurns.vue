@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { inject } from 'vue'
 import MarkdownContent from "./MarkdownContent.vue";
 import SourceContent from "./SourceContent.vue";
 import { answerKindNames, pending, statusText, type Turn } from "../lib/conversations";
+const showMedia = inject('sourceMediaPreview', true)
 defineProps<{
   turns: Turn[];
   readonly?: boolean;
@@ -95,13 +97,13 @@ defineEmits<{ retry: [turn: Turn]; trace: [turn: Turn] }>();
             </small>
             <small v-if="source.heading_path">{{ source.heading_path }}</small>
             <video
-              v-if="source.modality === 'video' && source.preview_url"
+              v-if="showMedia && source.modality === 'video' && source.preview_url"
               :src="source.preview_url"
               controls
               preload="metadata"
             />
             <img
-              v-else-if="source.modality === 'image' && source.preview_url"
+              v-else-if="showMedia && source.modality === 'image' && source.preview_url"
               :src="source.preview_url"
               :alt="source.filename"
               loading="lazy"
@@ -112,7 +114,7 @@ defineEmits<{ retry: [turn: Turn]; trace: [turn: Turn] }>();
               :filename="source.filename"
               :content-html="source.content_html"
             />
-            <p v-else>原文件预览暂不可用。</p>
+            <p v-else-if="showMedia">原文件预览暂不可用。</p>
           </article>
         </details>
         <details

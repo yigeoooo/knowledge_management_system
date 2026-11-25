@@ -384,7 +384,11 @@ onBeforeUnmount(() => {
       class="roles-error"
     />
 
-    <el-table
+    <section v-if="$slots.records" v-loading="loading" class="mobile-record-list">
+      <slot name="records" :rows="rows" :busy="!!actionId" :edit="openEditor" :toggle="toggleStatus" :remove="deleteRole" />
+      <el-empty v-if="!loading && !rows.length" :description="listError ? '加载失败，请重试' : '暂无匹配记录'" :image-size="48" />
+    </section>
+    <el-table v-else
       v-loading="loading"
       :data="rows"
       row-key="id"

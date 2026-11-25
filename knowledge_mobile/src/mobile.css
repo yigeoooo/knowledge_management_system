@@ -1,0 +1,105 @@
+:root { --accent: var(--brand-orange); --line: #e8eaee; --van-primary-color: var(--brand-orange); background: #f7f8fa; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 0; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.phone-app svg, .login-screen svg { width: 20px; height: 20px; }
+.phone-app .el-icon svg { width: 1em; height: 1em; }
+.phone-app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0,1fr) auto; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); max-width: 900px; margin: 0 auto; background: #f7f8fa; }
+.app-bar, .bottom-nav { display: flex; align-items: center; background: white; }
+.app-bar { height: 58px; padding: 0 17px; gap: 12px; border-bottom: 1px solid var(--line); }
+.brand-logo { display: block; width: 105px; height: auto; filter: brightness(.16); }
+.app-bar span { padding-left: 12px; border-left: 1px solid var(--line); font-size: 13px; color: #adb1ba; }
+.app-bar button, .features header button, .password-field button { border: 0; background: transparent; color: #626770; width: 44px; height: 44px; display: grid; place-items: center; margin-left: auto; }
+.phone-content { min-width: 0; overflow: auto; padding: 20px 16px 28px; }
+.phone-content.chatting { padding: 0; overflow: hidden; }
+.bottom-nav { justify-content: space-around; border-top: 1px solid var(--line); padding: 3px 6px max(4px,env(safe-area-inset-bottom)); }
+.bottom-nav a, .bottom-nav button { flex: 1; display: grid; justify-items: center; gap: 3px; padding: 6px; background: transparent; border: 0; color: #646972; font-size: 11px; text-decoration: none; }
+.bottom-nav .router-link-active, .bottom-nav button[aria-expanded=true] { color: var(--accent); font-weight: 650; }
+.bottom-nav .router-link-active svg { background: var(--el-color-primary-light-9); outline: 3px solid var(--el-color-primary-light-9); border-radius: 4px; }
+.work-title { padding: 6px 0 20px; }
+.work-title small { font-size: 13px; color: #686d76; }
+.work-title h1,.login-title h1 { line-height: 1.35; letter-spacing: 0; overflow-wrap: anywhere; margin: 8px 0 0; font-size: 26px; }
+.chat-entries { display: grid; grid-template-columns: repeat(auto-fit,minmax(132px,1fr)); gap: 10px; }
+.chat-entry { display: grid; align-content: space-between; min-height: 109px; background: #fff2df; color: #663e0e; padding: 16px; border-radius: 8px; text-decoration: none; }
+.chat-entry.featured { background: #1d1f23; color: white; }
+.entry-top { display: flex; align-items: center; justify-content: space-between; }
+.entry-top svg:first-child { width: 24px; height: 24px; }
+.entry-top svg:last-child { width: 15px; opacity: .8; }
+.chat-entry strong { font-size: 17px; }
+.tool-list h2 { margin: 25px 0 9px; font-size: 16px; }
+.tool-list a { display: flex; align-items: center; gap: 12px; min-height: 55px; color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+.tool-list i { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 7px; color: #985200; background: var(--el-color-primary-light-9); }
+.tool-list span { flex: 1; font-size: 15px; }
+.tool-list small { color: #666c76; font-variant-numeric: tabular-nums; }
+.tool-list a > svg { width: 15px; height: 15px; color: #80868f; }
+.features.el-drawer { border-radius: 12px 12px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+.features header { margin: 0; align-items: center; padding-block: 6px; }
+.features header svg { width: 18px; }
+.features .el-drawer__body { padding-top: 0; }
+.features i svg { width: 20px; }
+.login-screen { max-width: 480px; margin: auto; padding: max(40px,env(safe-area-inset-top)) 28px 32px; min-height: 100dvh; }
+.login-screen .brand-logo { width: 136px; }
+.login-title { margin: min(12vh,90px) 0 30px; padding-top: 20px; border-top: 2px solid var(--accent); }
+.login-fields { display: grid; gap: 20px; }
+.login-fields label { display: grid; gap: 9px; font-size: 14px; font-weight: 600; }
+.login-fields input { width: 100%; height: 48px; padding: 0 12px; border: 1px solid #c9ccd2; border-radius: 6px; color: var(--ink); font-size: 16px; background: white; }
+.login-fields input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.password-field { position: relative; }.password-field input { padding-right: 48px; }.password-field button { position: absolute; right: 2px; top: 2px; }
+.form-error button { justify-self: start; display: flex; align-items: center; gap: 7px; border: 0; padding: 4px 0; color: var(--accent); background: transparent; }
+.primary-action { display: flex; justify-content: space-between; align-items: center; width: 100%; height: 50px; border: 0; border-radius: 6px; padding: 0 17px; color: var(--ink); background: var(--accent); font-weight: 650; }
+.primary-action:disabled { opacity: .65; }.form-error { color: #9a3025; font-size: 14px; }
+.phone-content .page-heading { flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.phone-content .page-eyebrow, .phone-content .composer-actions small { display: none; }
+.phone-content .composer-actions { justify-content: flex-end; }
+.phone-content .page-heading h1 { font-size: 23px; letter-spacing: 0; }
+.phone-content .el-card { min-width: 0; border-radius: 8px; }
+.phone-content .table-pagination { overflow-x: auto; display: grid; gap: 8px; }
+.phone-content .permission-toolbar { flex-wrap: wrap; }
+.phone-content .permission-grid { grid-template-columns: repeat(auto-fit,minmax(min(230px,100%),1fr)); }
+.phone-content .el-card__body { min-width: 0; }
+.el-dialog,.el-message-box { max-width: calc(100vw - 24px); }
+.el-dialog { max-height: calc(100dvh - 42px - env(safe-area-inset-top)); overflow: auto; }
+.el-overlay-dialog { padding-top: env(safe-area-inset-top); }
+.el-message { max-width: 92vw; }
+.app-bar { background: #151619; border-color: #24262a; }
+.app-bar .brand-logo { filter: none; }
+.app-bar span { border-color: #45474a; color: #ececef; }
+.app-bar button { color: #d4d5d7; }
+.bottom-nav .router-link-active,.bottom-nav button[aria-expanded=true] { color: #965000; }
+.chat-entry.featured .entry-top { color: var(--brand-orange); }
+.phone-content .resource-card { border-radius: 8px; box-shadow: none; }
+.mobile-record-list { min-width: 0; }
+.record-row { padding: 11px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.record-heading { display: flex; align-items: center; gap: 10px; }
+.record-identity { flex: 1; min-width: 0; display: grid; gap: 3px; padding: 0; border: 0; text-align: start; background: transparent; color: var(--ink); }
+button.record-identity { min-height: 44px; }
+.record-identity strong { font-size: 16px; line-height: 1.4; }
+.record-identity span,.record-info { font-size: 13px; color: #626873; }
+.record-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #795023; }
+.record-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand-orange); }
+.record-badge.inactive { color: #676b72; }
+.record-badge.inactive::before { background: #9398a1; }
+.record-more { width: 44px; height: 44px; background: transparent; border: 0; color: #4d5159; font-size: 21px; }
+.record-info { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px 12px; line-height: 1.6; }
+.record-info small { width: 100%; }
+.record-fields { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 3px 16px; margin: 4px 0 0; }
+.record-fields dt { color: #737780; }
+.record-fields dd { margin: 0; color: #41454c; }
+.phone-content .table-pagination { overflow: visible; }
+.phone-content .el-pagination { flex-wrap: wrap; row-gap: 6px; }
+.phone-content .audit-workspace.stepped { display: block; height: auto; min-height: 0; }
+.phone-content .history-back { margin-bottom: 10px; }
+.record-more:focus-visible { outline-offset: -2px; }
+.phone-content .page-heading > div { min-width: 0; }
+.phone-content .page-heading > div > p { display: none; }
+.phone-content :is(.users-filters,.roles-filters,.robots-filters) .el-form-item__content { min-width: 0; }
+.phone-content .history-panel,.phone-content .owner-panel { min-width: 0; }
+.stepped .owner-panel,.stepped .history-panel,.stepped .detail-panel { border: 0; padding: 16px; background: #fff; height: auto; min-height: 0; }
+.stepped .owner-item,.stepped .audit-conversation { border-bottom: 1px solid var(--line); border-radius: 0; margin: 0; }
+.phone-content .permission-grid { grid-template-columns: 1fr; }
+@media (max-width:600px) {
+  .phone-content .el-form--inline .el-form-item { max-width: 100%; }
+  .el-dialog .user-form-row { grid-template-columns: 1fr; }
+  .el-input__inner,.el-textarea__inner { font-size: 16px; }
+}

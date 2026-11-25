@@ -6,7 +6,6 @@ import type { FormInstance, FormRules } from "element-plus";
 import { Plus, Refresh, Search, User as UserIcon } from "@element-plus/icons-vue";
 import { api, clearSession, session } from "../lib/session";
 import { queryParams } from "../lib/query";
-import { installPages } from "../router";
 
 interface ManagedUser {
   id: string;
@@ -230,7 +229,6 @@ async function saveUser() {
       editorOpen.value = false;
       if (result.reauthenticate) {
         clearSession();
-        installPages();
         ElMessage.success("信息已更新，请使用新的登录信息重新登录");
         await router.replace({ path: "/login", query: { redirect: "/users" } });
         return;
@@ -442,7 +440,11 @@ onBeforeUnmount(() => {
       :closable="false"
       class="users-error"
     />
-    <el-table
+    <section v-if="$slots.records" v-loading="loading" class="mobile-record-list">
+      <slot name="records" :rows="rows" :busy="!!actionId" :details="showDetails" :edit="openEditor" :toggle="toggleStatus" :remove="deleteUser" :protected-user="isProtected" />
+      <el-empty v-if="!loading && !rows.length" :description="listError ? '加载失败，请重试' : '暂无匹配记录'" :image-size="48" />
+    </section>
+    <el-table v-else
       v-loading="loading"
       :data="rows"
       row-key="id"

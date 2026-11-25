@@ -287,7 +287,11 @@ onBeforeUnmount(() => { ++listRequest; ++editorRequest; ++detailRequest; });
       <el-button :icon="Refresh" :loading="loading" text @click="loadRobots">刷新</el-button>
     </div>
     <el-alert v-if="listError" :title="listError" type="error" show-icon :closable="false" class="list-error" />
-    <el-table v-loading="loading" :data="rows" row-key="id" style="width: 100%">
+    <section v-if="$slots.records" v-loading="loading" class="mobile-record-list">
+      <slot name="records" :rows="rows" :busy="!!actionId" :details="showDetails" :edit="openEditor" :disable="disableRobot" />
+      <el-empty v-if="!loading && !rows.length" :description="listError ? '加载失败，请重试' : '暂无匹配记录'" :image-size="48" />
+    </section>
+    <el-table v-else v-loading="loading" :data="rows" row-key="id" style="width: 100%">
       <el-table-column label="机器人" min-width="220">
         <template #default="{ row }"><div class="robot-cell"><el-avatar :size="34"><el-icon><Cpu /></el-icon></el-avatar><div><strong>{{ row.name || "未命名机器人" }}</strong><span>{{ row.serial_no }}</span></div></div></template>
       </el-table-column>

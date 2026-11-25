@@ -14,43 +14,63 @@ let refreshing: Promise<void> | null = null
 const base = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 export const apiBase = base
 
+type Transport = (path: string, init: RequestInit, timeoutMs: number) => Promise<Response>
+let transport: Transport = (path, init) => fetch(base + path, init)
+let includePage = (_page: Page) => true
+export function configureClient(send: Transport, supports: (page: Page) => boolean) {
+  transport = send
+  includePage = supports
+}
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code = 0) { super(message) }
 }
 interface ApiRequestOptions extends RequestInit { timeoutMs?: number; responseType?: 'json' | 'blob' }
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const { timeoutMs = 15000, signal, responseType = 'json', ...init } = options
-  const timeout = AbortSignal.timeout(timeoutMs)
-  let response: Response
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const cancel = () => controller.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
   try {
-    response = await fetch(`${base}${path}`, {
-      ...init, credentials: 'include', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options.headers },
-    })
-  } catch {
-    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
-    throw new ApiError(timeout.aborted ? '请求超时，请点击重试获取结果' : '连接服务失败，请检查网络后重试', 0)
+    return await readResponse()
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', cancel)
   }
-  if (response.ok && responseType === 'blob') {
-    try { return await response.blob() as T } catch {
+  async function readResponse() {
+    let response: Response
+    try {
+      response = await transport(path, {
+        ...init, credentials: 'include', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options.headers },
+      }, timeoutMs)
+    } catch {
       if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
-      throw new ApiError(timeout.aborted ? '下载超时，请重试' : '文件下载中断，请重试', 0)
+      throw new ApiError(controller.signal.aborted ? '请求超时，请点击重试获取结果' : '连接服务失败，请检查网络后重试', 0)
     }
+    if (response.ok && responseType === 'blob') {
+      try { return await response.blob() as T } catch {
+        if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
+        throw new ApiError(controller.signal.aborted ? '下载超时，请重试' : '文件下载中断，请重试', 0)
+      }
+    }
+    const body = await response.json().catch(() => {
+      if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
+      if (controller.signal.aborted) throw new ApiError('请求超时，请点击重试获取结果', 0)
+      return null
+    })
+    if (!response.ok || !body || body.code !== 0) {
+      throw new ApiError(body?.message || '服务暂不可用，请稍后再试', response.status, body?.code)
+    }
+    return body.data as T
   }
-  const body = await response.json().catch(() => {
-    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError')
-    if (timeout.aborted) throw new ApiError('请求超时，请点击重试获取结果', 0)
-    return null
-  })
-  if (!response.ok || !body || body.code !== 0) {
-    throw new ApiError(body?.message || '服务暂不可用，请稍后再试', response.status, body?.code)
-  }
-  return body.data as T
 }
 function accept(data: Identity) {
   accessToken = data.access_token
   session.user = data.user
-  session.pages = data.pages
+  session.pages = data.pages.filter(includePage)
   session.ready = true
 }
 export function clearSession() {

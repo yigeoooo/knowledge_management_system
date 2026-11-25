@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext", "moduleResolution": "Bundler", "strict": true,
+    "skipLibCheck": true, "noEmit": true, "types": ["vite/client", "node"],
+    "baseUrl": ".", "paths": {
+      "@web/*": ["../knowledge_front/src/*"],
+      "vue": ["node_modules/vue"], "vue-router": ["node_modules/vue-router"],
+      "element-plus": ["node_modules/element-plus"], "@element-plus/icons-vue": ["node_modules/@element-plus/icons-vue"],
+      "marked": ["node_modules/marked"], "marked-highlight": ["node_modules/marked-highlight"],
+      "dompurify": ["node_modules/dompurify"], "highlight.js": ["node_modules/highlight.js"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts", "capacitor.config.ts"]
+}
