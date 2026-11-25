@@ -1,7 +1,7 @@
 import os
 import dashscope
 
-dashscope.base_http_api_url = "https://llm-f9r7idf9omepz6cl.cn-beijing.maas.aliyuncs.com/api/v1"
+dashscope.base_http_api_url = "your_api_url"
 
 text = "通用多模态表征模型示例"
 input = [{"text": text}]
