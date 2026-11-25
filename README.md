@@ -45,6 +45,12 @@ npm run dev -- --host 0.0.0.0
 
 RAG v2 使用 LangChain 文档与检索接口、结构化模型输出和 LangGraph 多阶段流程。问答日志可逐轮查看 LangSmith 处理流程，采用居中详情弹窗，支持本地诊断回退。配置、记忆边界、索引升级和评测命令见 [RAG 架构与运行](knowledge_back/docs/rag-architecture.md)。
 
-### 提示词与质量评测
+## 启动手机端
 
-管理员新增“提示词管理”和“质量评测”页面，支持数据库版本管理、草稿试测、人工标注、同题对比和发布回退。详见 [操作说明](knowledge_back/docs/prompt-evaluation-guide.md)。升级执行 `uv run flask --app app db upgrade` 并重启后端；生产环境增加 `uv run flask --app app evaluation-worker`。
+```bash
+cd knowledge_mobile
+npm ci
+npm run dev -- --host 0.0.0.0
+```
+
+浏览器访问本地地址，在浏览器内按F12打开开发者模式，并调整页面为手机看板视角，开启测试查看
