@@ -196,6 +196,13 @@ button.record-identity { min-height: 44px; }
 .phone-content.chatting .message-heading::before { content:''; width:4px; height:14px; background:var(--accent); }
 .phone-content.chatting .conversation-answer { font-size:16px; line-height:1.8; }
 .phone-content.chatting .turn-sources { margin-top:12px; border-top:1px solid var(--line); }
+.phone-content .turn-source .word-content table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.phone-app .phone-content :is(.word-content, .markdown-content) :is(td, th) { min-width: 5.5em; }
 .phone-content.chatting .chat-composer { padding:8px 14px; }
 .phone-content.chatting .composer-box { border-radius:8px; box-shadow:none; background:var(--canvas); padding:6px; }
 .mobile-composer .van-field { background:transparent; }

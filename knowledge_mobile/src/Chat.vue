@@ -9,10 +9,12 @@ import { api } from '@web/lib/session'
 import { type Conversation, type ConversationPage } from '@web/lib/conversations'
 import { useConversation } from '@web/lib/useConversation'
 import ConversationTurns from '@web/components/ConversationTurns.vue'
+import { useCitationTurns } from './citations'
 import ConversationLengthNotice from '@web/components/ConversationLengthNotice.vue'
 
 const route = useRoute(), router = useRouter()
 const { conversation, turns, loading, sending, error, nextBefore, busy, reset, open, older, send, retry } = useConversation()
+const citationTurns = useCitationTurns(turns)
 const history = ref<Conversation[]>([]), historyLoading = ref(false), historyError = ref('')
 const cursor = ref<string | null>(null), historySearch = ref('')
 const bases = ref<{ id: string; name: string }[]>([]), baseId = ref(''), question = ref('')
@@ -144,7 +146,7 @@ onBeforeUnmount(() => { disposed = true; historyGeneration++; suggestionGenerati
         <div v-if="!turns.length && !loading" class="chat-welcome"><el-icon :size="38"><ChatDotRound /></el-icon><h2>今天想了解什么？</h2><p>本次对话会记住上下文，每个新对话独立开始。</p>
           <div class="suggestion-list"><span v-if="suggestionsLoading">正在准备推荐问题…</span><button v-for="item in suggestions" :key="item.question" @click="question = item.question; selectedSuggestion = item">{{ item.question }}</button><p v-if="suggestionsError">推荐问题暂不可用，你仍可以直接提问。</p><el-button v-if="baseId && !suggestionsLoading" text @click="loadSuggestions">刷新推荐</el-button></div>
         </div>
-        <ConversationTurns :turns="turns" :readonly="!!conversation?.closed_at" @retry="retry" />
+        <ConversationTurns :turns="citationTurns" :readonly="!!conversation?.closed_at" @retry="retry" />
       </div></div>
       <footer class="chat-composer"><el-button v-if="!pinned && turns.length" circle :icon="ArrowDown" class="scroll-latest" aria-label="滚动到最新消息" @click="scrollToLatest" /><div class="composer-box">
         <ConversationLengthNotice v-if="conversation" :turn-count="conversation.turn_count" :disabled="busy || loading" @new-conversation="navigate()" />

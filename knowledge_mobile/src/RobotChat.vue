@@ -9,12 +9,14 @@ import { api } from '@web/lib/session'
 import { type Conversation, type ConversationPage, type Turn } from '@web/lib/conversations'
 import { useRobotConversation, type RobotOption } from '@web/lib/useRobotConversation'
 import ConversationTurns from '@web/components/ConversationTurns.vue'
+import { useCitationTurns } from './citations'
 import ConversationLengthNotice from '@web/components/ConversationLengthNotice.vue'
 
 const route = useRoute(), router = useRouter()
 const robots = ref<RobotOption[]>([]), robotId = ref(''), robotsLoading = ref(true), robotsError = ref('')
 const robot = computed(() => robots.value.find(r => r.id === robotId.value))
 const { conversation, turns, loading, sending, error, nextBefore, busy, awaitingAnswer, reset, open, older, send, resume, retry } = useRobotConversation(robot)
+const citationTurns = useCitationTurns(turns)
 const history = ref<Conversation[]>([]), historyLoading = ref(false), historyError = ref(''), cursor = ref<string | null>(null), historySearch = ref('')
 const question = ref(''), messagePanel = ref<HTMLElement>(), historyExpanded = ref(window.innerWidth > 720), pinned = ref(true)
 const robotReady = computed(() => robot.value?.status === 'active' && !!robot.value.knowledge_base_id && robot.value.knowledge_base_status === 'active')
@@ -125,7 +127,7 @@ onBeforeUnmount(() => { disposed = true; historyGeneration++ })
           <p v-if="robot" class="robot-identity">{{ robot.name || '机器人' }} · {{ robot.serial_no }}</p>
           <p v-else-if="!robotsLoading && !robotsError">暂无机器人，请先在机器人管理中创建并绑定知识库。</p>
         </div>
-        <ConversationTurns :turns="turns" :readonly="readonly" :retry-disabled="busy" plain @retry="retryAnswer" />
+        <ConversationTurns :turns="citationTurns" :readonly="readonly" :retry-disabled="busy" plain @retry="retryAnswer" />
       </div></div>
       <footer class="chat-composer"><el-button v-if="!pinned && turns.length" circle :icon="ArrowDown" class="scroll-latest" aria-label="滚动到最新消息" @click="scrollToLatest" /><div class="composer-box">
         <ConversationLengthNotice v-if="conversation" :turn-count="conversation.turn_count" :disabled="busy || loading" @new-conversation="navigate()" />
