@@ -7,14 +7,17 @@ import pytest
 import test_document_creation as creation_tests
 from docx import Document as Docx
 from docx.enum.section import WD_ORIENT
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from test_document_creation import create
 from test_document_creation import word_content as authored_content
 
 from app.document_authoring import document_bytes
+from app.docx_preview import docx_html
 from app.extensions import db
 from app.http import ApiError
 from app.indexer import process_one
@@ -89,6 +92,40 @@ def test_editor_snapshot_round_trip_and_external_edit_invalidation():
     assert imported["content"][0]["content"][0]["text"] == "在桌面 Word 中修改过"
 
 
+@pytest.mark.parametrize("custom_default", [False, True])
+def test_edit_docx_without_builtin_styles(custom_default):
+    doc = Docx()
+    doc.add_paragraph("操作说明")
+    doc.add_table(rows=1, cols=1).cell(0, 0).text = "参数"
+    for style in list(doc.styles):
+        style.delete()
+    if custom_default:
+        style = doc.styles.add_style("讲义正文", WD_STYLE_TYPE.PARAGRAPH)
+        style.element.set(qn("w:default"), "1")
+        style.font.size = Pt(14)
+    source = BytesIO()
+    doc.save(source)
+    content = word_content(source.getvalue())
+    text = content["content"][0]["content"][0]
+    text["text"] = "新版操作说明"
+    url = "https://example.org/manual"
+    text["marks"].append({"type": "link", "attrs": {"href": url}})
+    content["content"].append({
+        "type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "附录"}],
+    })
+
+    saved = document_bytes("docx", content, source=source.getvalue())
+    reopened = Docx(BytesIO(saved))
+    body = reopened.paragraphs[0]
+    assert body.text == "新版操作说明" and body.hyperlinks[0].url == url
+    if custom_default:
+        assert body.style.name == "讲义正文" and body.style.font.size.pt == 14
+    assert reopened.tables[0].cell(0, 0).text == "参数"
+    assert "<h2" in docx_html(saved)
+    assert word_content(saved) == content
+    assert Docx(BytesIO(source.getvalue())).paragraphs[0].text == "操作说明"
+
+
 @pytest.mark.parametrize("add_list", [False, True])
 def test_edit_docx_without_optional_numbering_part(add_list):
     doc = Docx()
@@ -136,6 +173,39 @@ def test_import_docx_without_page_margin_uses_word_defaults():
     }
 
 
+@pytest.mark.parametrize("omit_section", [True, False])
+def test_optional_page_settings_round_trip(omit_section):
+    doc = Docx()
+    doc.add_paragraph("纸张设置")
+    section = doc.sections[0]
+    if omit_section:
+        doc.element.body.remove(section._sectPr)
+        size = {"width": 21, "height": 29.7}
+    else:
+        section.orientation = WD_ORIENT.LANDSCAPE
+        section.page_width = Cm(32)
+        section.page_height = None
+        size = {"width": 21, "height": 32}
+    source = BytesIO()
+    doc.save(source)
+    content = word_content(source.getvalue())
+    assert content["attrs"]["page"]["size"] == pytest.approx(size, abs=0.01)
+    saved = document_bytes("docx", content, source=source.getvalue())
+    assert word_content(saved) == content
+
+
+def test_list_without_explicit_number_format_round_trips_as_decimal():
+    doc = Docx()
+    doc.add_paragraph("检查电源", style="List Number")
+    for element in doc.part.numbering_part.element.xpath(".//w:numFmt"):
+        element.getparent().remove(element)
+    source = BytesIO()
+    doc.save(source)
+    content = word_content(source.getvalue())
+    assert content["content"][0]["attrs"]["listType"] == "decimal"
+    assert word_content(document_bytes("docx", content, source=source.getvalue())) == content
+
+
 def test_unsupported_content_is_explicit_instead_of_silently_discarded():
     doc = Docx()
     doc.add_paragraph("正文").add_run()._r.append(OxmlElement("w:drawing"))
@@ -143,7 +213,7 @@ def test_unsupported_content_is_explicit_instead_of_silently_discarded():
     doc.save(output)
     with pytest.raises(ApiError) as error:
         word_content(output.getvalue())
-    assert "图片" in error.value.message
+    assert error.value.code == 42203 and "图片" in error.value.message
     with pytest.raises(ApiError):
         word_content(b"broken docx")
 
@@ -166,7 +236,7 @@ def test_word_create_edit_preview_download_index_and_retry(
     original_objects = copy.deepcopy(authoring_setup["objects"])
     path = f"/api/v1/documents/{document_id}/word-content"
     headers = authoring_setup["headers"]
-    opened = client.get(f"{path}?version_id={base_id}", headers=headers)
+    opened = client.get(f"{path}?version_id={base_id}&for_edit=1", headers=headers)
     assert opened.status_code == 200
     content = opened.get_json()["data"]["content"]
     content["content"][1]["content"][0]["text"] = "修改后检查电源"
@@ -176,6 +246,7 @@ def test_word_create_edit_preview_download_index_and_retry(
     version_id = edited.get_json()["data"]["version"]["id"]
     assert edited.get_json()["data"]["version"]["version_no"] == 2
     assert client.post(path, headers=headers, json=body).status_code == 200
+    assert client.get(f"{path}?version_id={base_id}&for_edit=1", headers=headers).status_code == 409
     stale = client.post(path, headers=headers, json={**body, "request_id": str(uuid4())})
     assert stale.status_code == 409
     assert all(authoring_setup["objects"][key] == value for key, value in original_objects.items())
@@ -205,6 +276,33 @@ def test_word_create_edit_preview_download_index_and_retry(
     assert process_one(app) and process_one(app)
     with app.app_context():
         assert db.session.get(Document, UUID(document_id)).current_version_id == UUID(version_id)
+
+
+def test_preflight_rejects_export_failure_before_editing_without_writing_a_version(
+    app, client, authoring_setup, monkeypatch
+):
+    from docx.document import Document as WordDocument
+
+    grant_documents(app)
+    response, _ = create(client, authoring_setup, format="docx", content=authored_content())
+    saved = response.get_json()["data"]
+    path = f"/api/v1/documents/{saved['document']['id']}/word-content"
+    params = {"version_id": saved["version"]["id"]}
+    objects = dict(authoring_setup["objects"])
+
+    def fail_export(self, target):
+        assert isinstance(target, BytesIO)
+        raise ValueError("unsupported layout")
+
+    monkeypatch.setattr(WordDocument, "save", fail_export)
+    assert client.get(path, query_string=params, headers=authoring_setup["headers"]).status_code == 200
+    response = client.get(path, query_string={**params, "for_edit": 1}, headers=authoring_setup["headers"])
+    assert response.status_code == 422 and response.json["code"] == 42203
+    assert authoring_setup["objects"] == objects
+    authoring_setup["schedule"].assert_called_once()
+    with app.app_context():
+        for model in (DocumentVersion, IndexTask):
+            assert db.session.scalar(db.select(db.func.count()).select_from(model)) == 1
 
 
 def test_word_save_failure_preserves_source_and_permissions(

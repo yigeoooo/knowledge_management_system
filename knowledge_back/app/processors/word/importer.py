@@ -8,20 +8,35 @@ from zipfile import BadZipFile, ZipFile
 
 from docx import Document
 from docx.enum.section import WD_ORIENT
+from docx.exceptions import PythonDocxError
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
+from docx.oxml.exceptions import InvalidXmlError
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.hyperlink import Hyperlink
 from lxml import etree
 
 from ...core.http import ApiError
+from . import WordCompatibilityError
 from .numbering import numbering_element
 from .styles import ALIGNMENTS
 
 SNAPSHOT = "/customXml/kbs-editor.xml"
 DEFAULT_WORD_MARGIN_CM = 2.54
+MC_ALTERNATE_CONTENT = "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"
+# python-docx skips unrecognised children when iterating paragraphs and tables.
+# Only inspect content containers; properties and package parts have their own schemas.
+CONTENT_CHILDREN = {
+    qn("w:" + parent): {qn("w:" + child) for child in children.split()}
+    for parent, children in {
+        "body": "p tbl sectPr", "p": "pPr r hyperlink", "hyperlink": "r",
+        "tbl": "tblPr tblGrid tr", "tr": "tblPrEx trPr tc", "tc": "tcPr p tbl",
+        "r": "rPr t br cr tab noBreakHyphen softHyphen lastRenderedPageBreak",
+    }.items()
+}
+RANGE_MARKERS = {qn("w:" + name) for name in ("bookmarkStart", "bookmarkEnd", "proofErr")}
 HIGHLIGHTS = {
     "yellow": "#ffff00",
     "green": "#00ff00",
@@ -53,7 +68,7 @@ LIST_TYPES = {
 
 
 def unsupported(feature):
-    raise ApiError(f"该 Word 含{feature}，暂不能在线编辑；请下载修改后上传新版本", 422, 42202)
+    raise WordCompatibilityError(f"文档含{feature}，暂不支持在线编辑。请下载原文件，修改后上传新版本。")
 
 
 def load_word(content):
@@ -64,7 +79,12 @@ def load_word(content):
                 or sum(i.file_size for i in archive.infolist()) > 80_000_000
             ):
                 raise ValueError("DOCX too large")
-        return Document(BytesIO(content))
+        document = Document(BytesIO(content))
+        if document.element.body is None:
+            raise ValueError("Missing document body")
+        # A single-section document can omit its final section properties entirely.
+        document.element.body.get_or_add_sectPr()
+        return document
     except (BadZipFile, ValueError, KeyError, etree.XMLSyntaxError, OSError) as error:
         raise ApiError("Word 文件无法解析，请确认是有效的 DOCX 文件", 422, 42202) from error
 
@@ -211,7 +231,10 @@ def numbering(paragraph):
     nums = root.xpath(f'w:num[@w:numId="{num_id}"]')
     if not nums:
         unsupported("无法识别的编号")
-    aid = nums[0].find(qn("w:abstractNumId")).get(qn("w:val"))
+    abstract_ids = nums[0].xpath("w:abstractNumId/@w:val")
+    if not abstract_ids or not abstract_ids[0].isdecimal():
+        unsupported("缺少定义的列表编号")
+    aid = abstract_ids[0]
     levels = root.xpath(f'w:abstractNum[@w:abstractNumId="{aid}"]/w:lvl[@w:ilvl="{level}"]')
     overrides = nums[0].xpath(f'w:lvlOverride[@w:ilvl="{level}"]')
     if overrides and overrides[0].find(qn("w:lvl")) is not None:
@@ -219,13 +242,14 @@ def numbering(paragraph):
     if not levels:
         unsupported("无法识别的多级编号")
     lvl = levels[0]
-    fmt = lvl.find(qn("w:numFmt")).get(qn("w:val"))
+    format_node = lvl.find(qn("w:numFmt"))
+    fmt = format_node.get(qn("w:val")) if format_node is not None else "decimal"
     if fmt not in LIST_TYPES and fmt != "bullet":
         unsupported("特殊编号样式")
     start = lvl.find(qn("w:start"))
-    start = int(start.get(qn("w:val"))) if start is not None else 1
+    start = int(start.get(qn("w:val"), "")) if start is not None else 1
     if overrides and (override := overrides[0].find(qn("w:startOverride"))) is not None:
-        start = int(override.get(qn("w:val")))
+        start = int(override.get(qn("w:val"), ""))
     # Standard nested lists are supported; compound labels such as 1.2. need a
     # numbering engine, so do not silently flatten them to simple numbers.
     label = lvl.find(qn("w:lvlText"))
@@ -243,13 +267,21 @@ def numbering(paragraph):
     )
 
 
+def heading_level(paragraph):
+    outline = paragraph._p.xpath("./w:pPr/w:outlineLvl/@w:val")
+    if outline:
+        return int(outline[0]) + 1 if re.fullmatch(r"[0-5]", outline[0]) else None
+    style = paragraph.style
+    heading = re.fullmatch(r"Heading ([1-6])", style.name or "", re.IGNORECASE) if style else None
+    return int(heading[1]) if heading else None
+
+
 def _paragraph(paragraph):
     attrs = paragraph_attrs(paragraph)
-    name = paragraph.style.name if paragraph.style else ""
-    heading = re.fullmatch(r"Heading ([1-6])", name, flags=re.IGNORECASE)
+    heading = heading_level(paragraph)
     kind = "heading" if heading else "paragraph"
     if heading:
-        attrs["level"] = int(heading[1])
+        attrs["level"] = heading
     blocks, inline = [], []
 
     def flush():
@@ -272,6 +304,9 @@ def _paragraph(paragraph):
                     inline.append({"type": "text", "text": child.text, "marks": marks})
                 elif child.tag == qn("w:tab"):
                     inline.append({"type": "text", "text": "\t", "marks": marks})
+                elif child.tag in (qn("w:noBreakHyphen"), qn("w:softHyphen")):
+                    text = "\u2011" if child.tag == qn("w:noBreakHyphen") else "\u00ad"
+                    inline.append({"type": "text", "text": text, "marks": marks})
                 elif child.tag in (qn("w:br"), qn("w:cr")):
                     if child.get(qn("w:type")) == "page":
                         if inline:
@@ -360,9 +395,26 @@ def _blocks(container):
 
 
 def word_content(content):
+    return word_edit_data(content)["content"]
+
+
+def word_edit_data(content):
+    document = load_word(content)
+    try:
+        editor_content = _editable_content(document)
+    except (InvalidXmlError, PythonDocxError, ValueError, KeyError, IndexError) as error:
+        raise WordCompatibilityError(
+            "无法解析文档中的排版或引用。请下载原文件，用 Word 打开并另存为 DOCX 后重试。"
+        ) from error
+    warnings = []
+    if document.element.find(".//" + qn("w:bookmarkStart")) is not None:
+        warnings.append("保存新版本会移除正文书签。需要保留书签时，请下载原文件，修改后上传。")
+    return {"content": editor_content, "warnings": warnings}
+
+
+def _editable_content(document):
     from .authoring import _validate_word
 
-    document = load_word(content)
     if snapshot := _snapshot(document):
         _validate_word(snapshot, allow_empty=True)
         return snapshot
@@ -374,11 +426,21 @@ def word_content(content):
             "域或脚注",
         ),
         (("sdt", "altChunk", "commentRangeStart"), "内容控件或批注"),
+        (("ruby",), "拼音标注"),
+        (("sym",), "特殊字体符号"),
+        (("customXml", "smartTag", "subDoc"), "自定义内容标记或子文档"),
     ]:
         if any(document.element.findall(".//" + qn("w:" + tag)) for tag in tags):
             unsupported(label)
     if document.element.xpath(".//m:oMath | .//m:oMathPara"):
         unsupported("公式")
+    if document.element.find(".//" + MC_ALTERNATE_CONTENT) is not None:
+        unsupported("需要桌面 Word 渲染的兼容对象")
+    for parent in document.element.body.iter(*CONTENT_CHILDREN):
+        allowed = CONTENT_CHILDREN[parent.tag]
+        for child in parent:
+            if isinstance(child.tag, str) and child.tag not in allowed and child.tag not in RANGE_MARKERS:
+                unsupported(f"无法保留的正文组件（{etree.QName(child).localname}）")
     if len(document.sections) != 1:
         unsupported("多个分节")
     section = document.sections[0]
@@ -386,14 +448,21 @@ def word_content(content):
     if cols is not None and int(cols.get(qn("w:num"), "1")) != 1:
         unsupported("分栏排版")
     landscape = section.orientation == WD_ORIENT.LANDSCAPE
-    width, height = section.page_width.cm, section.page_height.cm
+    # The editor uses portrait dimensions plus orientation. Supply its A4 size
+    # only for omitted dimensions, retaining custom sizes and landscape pages.
+    width, height = section.page_width, section.page_height
+    if landscape:
+        width, height = height, width
 
     def margin_cm(edge):
         value = getattr(section, f"{edge}_margin")
         return value.cm if value is not None else DEFAULT_WORD_MARGIN_CM
 
     page = {
-        "size": {"width": height if landscape else width, "height": width if landscape else height},
+        "size": {
+            "width": width.cm if width is not None else 21,
+            "height": height.cm if height is not None else 29.7,
+        },
         "orientation": "landscape" if landscape else "portrait",
         "margin": {
             edge: margin_cm(edge)
@@ -404,5 +473,7 @@ def word_content(content):
     try:
         _validate_word(result, allow_empty=True)
     except ApiError as error:
-        raise ApiError("该 Word 的排版超出在线编辑范围：" + error.message, 422, 42202) from error
+        raise WordCompatibilityError(
+            f"该 Word 的排版超出在线编辑范围（{error.message}）。请下载修改后上传新版本。"
+        ) from error
     return result

@@ -9,7 +9,7 @@ from docx.text.hyperlink import Hyperlink
 from lxml import etree, html
 
 from ...core.http import ApiError
-from .importer import load_word, numbering, paragraph_attrs, run_marks
+from .importer import heading_level, load_word, numbering, paragraph_attrs, run_marks
 
 
 def _css(styles):
@@ -86,9 +86,8 @@ def _paragraph_html(paragraph):
         styles["line-height"] = f"{attrs['lineSpacingPt']:g}pt"
     if attrs.get("pageBreakBefore"):
         styles["break-before"] = "page"
-    name = paragraph.style.name if paragraph.style else ""
-    heading = re.fullmatch(r"Heading ([1-6])", name, flags=re.IGNORECASE)
-    tag = "h" + heading[1] if heading else "p"
+    level = heading_level(paragraph)
+    tag = f"h{level}" if level else "p"
     borders = paragraph._p.pPr.find(qn("w:pBdr")) if paragraph._p.pPr is not None else None
     return f'<{tag} style="{_css(styles)}">{_paragraph_inner(paragraph)}</{tag}>' + (
         "<hr>" if borders is not None else ""

@@ -31,6 +31,7 @@ test('uploaded DOCX can be edited, retried, previewed, downloaded and reopened w
   const identity = await login.json()
   const attempts: string[] = []
   let failSave = true
+  let unsupportedSave = true
   await page.route('**/api/v1/**', async route => {
     const req = route.request(), url = new URL(req.url())
     if (url.pathname.endsWith('/auth/refresh')) {
@@ -39,6 +40,15 @@ test('uploaded DOCX can be edited, retried, previewed, downloaded and reopened w
     if (url.pathname.endsWith('/word-content') && req.method() === 'POST') {
       attempts.push(req.postDataJSON().request_id)
       if (failSave) { failSave = false; await route.fulfill({ status: 503, json: { code: 50301, message: '测试存储暂不可用' } }); return }
+      if (unsupportedSave) {
+        unsupportedSave = false
+        const body = req.postDataJSON()
+        body.content.content.push({ type: 'image' })
+        const response = await route.fetch({ url: `${origin}${url.pathname}`, postData: body })
+        expect(response.status()).toBe(422)
+        await route.fulfill({ response })
+        return
+      }
     }
     const response = await route.fetch({ url: `${origin}${url.pathname}${url.search}` })
     await route.fulfill({ response })
@@ -66,14 +76,19 @@ test('uploaded DOCX can be edited, retried, previewed, downloaded and reopened w
   await save.click()
   await expect(page.getByText('测试存储暂不可用', { exact: true })).toBeVisible()
   await expect(editor).toContainText('在线修改')
+  await save.click()
+  const notice = page.getByRole('dialog', { name: '这次修改暂时无法保存' })
+  await expect(notice).toContainText('图片')
+  await notice.getByRole('button', { name: '返回编辑' }).click()
+  await expect(editor).toContainText('在线修改')
   const savedResponse = page.waitForResponse(r => r.url().endsWith('/word-content') && r.request().method() === 'POST')
   await save.click()
   const savedBody = await (await savedResponse).json()
   expect(savedBody.code, savedBody.message).toBe(0)
   expect(errors).toEqual([])
   await expect(page.locator('.document-preview')).toContainText('在线修改')
-  expect(attempts).toHaveLength(2)
-  expect(attempts[0]).toBe(attempts[1])
+  expect(attempts).toHaveLength(3)
+  expect(new Set(attempts).size).toBe(1)
   const downloadResponse = page.waitForResponse(r => r.url().includes('/download-url'))
   await page.getByRole('button', { name: '下载', exact: true }).first().click()
   const download = (await (await downloadResponse).json()).data.download_url
@@ -96,6 +111,34 @@ test('uploaded DOCX can be edited, retried, previewed, downloaded and reopened w
   await page.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(editor).toHaveCount(0)
   expect(errors).toEqual([])
+})
+
+test('unsupported revisions are explained and the original is available in preview', async ({ page, request }) => {
+  const login = await request.post(`${origin}/api/v1/auth/login`, { data: { username: 'admin', password: 'Test-Password-2026!' } })
+  const identity = await login.json()
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/auth/refresh')) { await route.fulfill({ json: identity }); return }
+    await route.fulfill({ response: await route.fetch({ url: `${origin}${url.pathname}${url.search}` }) })
+  })
+  await page.goto('/documents')
+  await page.getByRole('button', { name: '上传文件', exact: true }).click()
+  const file = await request.get(`${origin}/fixture/external.docx?revisions=1`)
+  await page.locator('input[type=file]').first().setInputFiles({ name: '带修订.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await file.body() })
+  await page.getByRole('button', { name: '开始上传', exact: true }).click()
+  const row = page.getByRole('row').filter({ hasText: '带修订' })
+  const check = page.waitForRequest(r => r.url().includes('/word-content?') && new URL(r.url()).searchParams.get('for_edit') === '1')
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await check
+  const notice = page.getByRole('dialog', { name: '此版本暂不支持在线编辑' })
+  await expect(notice).toContainText('修订记录')
+  await notice.getByRole('button', { name: '返回预览' }).click()
+  await expect(page.getByRole('textbox', { name: 'Word 文档正文' })).toHaveCount(0)
+  await expect(page.locator('.document-preview')).toContainText('设备维护')
+  await expect(page.locator('.document-actions').getByRole('button', { name: '下载' })).toBeEnabled()
+  await page.getByRole('button', { name: '在线编辑' }).click()
+  await expect(notice).toContainText('修订记录')
+  await expect(page.getByRole('textbox', { name: 'Word 文档正文' })).toHaveCount(0)
 })
 
 test('a Word created inside the system can be reopened and saved from document management', async ({ page, request }) => {

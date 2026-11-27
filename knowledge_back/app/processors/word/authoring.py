@@ -5,13 +5,17 @@ from urllib.parse import urlparse
 
 from docx import Document as WordDocument
 from docx.enum.section import WD_ORIENT
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_BREAK
+from docx.exceptions import InvalidSpanError, PythonDocxError
 from docx.oxml import OxmlElement
+from docx.oxml.exceptions import InvalidXmlError
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
 from ...core.http import ApiError
+from . import WordCompatibilityError
 from .numbering import numbering_element
 from .styles import (
     ALIGNMENTS,
@@ -77,6 +81,13 @@ def _invalid(message="Word 内容格式不正确"):
     raise ApiError(message, 422, 42202)
 
 
+def _unsupported_editor_item(kind):
+    labels = {"image": "图片", "inlineImage": "行内图片", "math": "公式",
+              "video": "视频", "audio": "音频", "textBox": "文本框", "footnote": "脚注"}
+    label = labels.get(kind, kind[:60])
+    raise WordCompatibilityError(f"暂不支持保存“{label}”。请移除该组件或格式后再保存。")
+
+
 def _valid_text(text):
     if not isinstance(text, str) or any(
         (ord(char) < 32 and char not in "\n\r\t")
@@ -90,18 +101,20 @@ def _valid_text(text):
 def _validate_word(root, *, allow_empty=False):
     nodes, characters, meaningful = 0, 0, False
 
-    def visit(node, depth=0):
+    def visit(node, depth=0, parent=None):
         nonlocal nodes, characters, meaningful
         nodes += 1
         if nodes > 10_000 or depth > 24:
             _invalid("文档结构过大或嵌套过深")
-        if (
-            not isinstance(node, dict)
-            or not isinstance(node.get("type"), str)
-            or node["type"] not in CHILDREN
-        ):
+        if not isinstance(node, dict) or not isinstance(node.get("type"), str):
             _invalid()
         kind = node["type"]
+        if kind not in CHILDREN:
+            _unsupported_editor_item(kind)
+        if parent is not None and kind not in CHILDREN[parent]:
+            if parent in {"tableCell", "tableHeader"} and kind == "table":
+                raise WordCompatibilityError("暂不支持保存嵌套表格。请将内层表格移到外层表格之外。")
+            _invalid()
         attrs = node.get("attrs") or {}
         validate_attributes(kind, attrs)
         if kind == "heading" and (
@@ -121,12 +134,10 @@ def _validate_word(root, *, allow_empty=False):
         if not isinstance(marks, list):
             _invalid()
         for mark in marks:
-            if (
-                not isinstance(mark, dict)
-                or not isinstance(mark.get("type"), str)
-                or mark["type"] not in MARKS
-            ):
+            if not isinstance(mark, dict) or not isinstance(mark.get("type"), str):
                 _invalid()
+            if mark["type"] not in MARKS:
+                _unsupported_editor_item(mark["type"])
             validate_attributes(mark["type"], mark.get("attrs") or {})
             if mark["type"] == "link":
                 attributes = mark.get("attrs") or {}
@@ -146,13 +157,7 @@ def _validate_word(root, *, allow_empty=False):
         if kind in {"bulletList", "orderedList", "taskList", "table"} and not children:
             _invalid()
         for child in children:
-            if (
-                not isinstance(child, dict)
-                or not isinstance(child.get("type"), str)
-                or child["type"] not in CHILDREN[kind]
-            ):
-                _invalid()
-            visit(child, depth + 1)
+            visit(child, depth + 1, kind)
         if kind == "table":
             _table_layout(node)
         if kind == "doc":
@@ -221,7 +226,7 @@ def _page_settings(settings, section=None):
             setattr(section, f"{side}_margin", Cm(value))
 
 
-def _inline(paragraph, nodes):
+def _inline(paragraph, nodes, link_style):
     for node in nodes:
         if node["type"] == "hardBreak":
             paragraph.add_run().add_break(WD_BREAK.LINE)
@@ -257,11 +262,7 @@ def _inline(paragraph, nodes):
                 )
                 hyperlink = OxmlElement("w:hyperlink")
                 hyperlink.set(qn("r:id"), relation)
-                run.style = (
-                    "Hyperlink"
-                    if "Hyperlink" in paragraph.part.document.styles
-                    else "Default Paragraph Font"
-                )
+                run.style = link_style
                 hyperlink.append(run._r)
                 paragraph._p.append(hyperlink)
 
@@ -311,8 +312,7 @@ def _numbering(document, ordered, start, level, list_type=None):
     return numbering.add_num(abstract_id).numId
 
 
-def _word_bytes(content, source=None):
-    _validate_word(content)
+def _render_word(content, source):
     from .importer import load_word, save_snapshot
 
     document = load_word(source) if source else WordDocument()
@@ -329,19 +329,28 @@ def _word_bytes(content, source=None):
         normal.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "宋体")
 
     _page_settings((content.get("attrs") or {}).get("page"), document.sections[0])
+    # Uploaded DOCX files can contain an empty or partial styles.xml.
+    styles = {(style.type, style.name): style for style in document.styles}
+    body_style = styles.get((WD_STYLE_TYPE.PARAGRAPH, "Normal"))
+    grid_style = styles.get((WD_STYLE_TYPE.TABLE, "Table Grid"))
+    link_style = styles.get((WD_STYLE_TYPE.CHARACTER, "Hyperlink")) or styles.get(
+        (WD_STYLE_TYPE.CHARACTER, "Default Paragraph Font")
+    )
 
     def render(nodes, container, level=0):
         for node in nodes:
             kind, children = node["type"], node.get("content", [])
             attrs = node.get("attrs") or {}
             if kind in {"paragraph", "heading", "codeBlock"}:
-                style = (
-                    f"Heading {(node.get('attrs') or {}).get('level', 1)}"
-                    if kind == "heading"
-                    else "Normal"
-                )
-                paragraph = container.add_paragraph(style=style)
-                _inline(paragraph, children)
+                if kind == "heading":
+                    heading_level = attrs.get("level", 1)
+                    style = styles.get((WD_STYLE_TYPE.PARAGRAPH, f"Heading {heading_level}"))
+                    paragraph = container.add_paragraph(style=style)
+                    if style is None:
+                        xml_value(paragraph._p.get_or_add_pPr(), "outlineLvl", val=heading_level - 1)
+                else:
+                    paragraph = container.add_paragraph(style=body_style)
+                _inline(paragraph, children, link_style)
                 paragraph_style(paragraph, attrs)
                 if kind == "codeBlock":
                     for run in paragraph.runs:
@@ -370,7 +379,7 @@ def _word_bytes(content, source=None):
                         )
                     if first:
                         paragraph_style(paragraph, first.get("attrs") or {})
-                        _inline(paragraph, first.get("content", []))
+                        _inline(paragraph, first.get("content", []), link_style)
                     if kind != "taskList":
                         numpr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
                         numpr.get_or_add_ilvl().val = 0
@@ -391,7 +400,7 @@ def _word_bytes(content, source=None):
             elif kind == "table":
                 columns, cells = _table_layout(node)
                 table = container.add_table(rows=len(children), cols=columns)
-                table.style = "Table Grid"
+                table.style = grid_style
                 # Merge on the empty grid, then populate each anchor once.
                 for row, col, row_span, col_span, cell_node in cells:
                     if row_span > 1 or col_span > 1:
@@ -435,9 +444,27 @@ def _word_bytes(content, source=None):
 
     render(content.get("content", []), document)
     save_snapshot(document, content)
-    output = BytesIO()
-    document.save(output)
-    return output.getvalue()
+    with BytesIO() as output:
+        document.save(output)
+        return output.getvalue()
+
+
+def _word_bytes(content, source=None, *, allow_empty=False):
+    _validate_word(content, allow_empty=allow_empty)
+    try:
+        return _render_word(content, source)
+    except InvalidSpanError as error:
+        raise WordCompatibilityError("暂不支持保存此表格的合并方式。请调整合并单元格后重试。") from error
+    except (InvalidXmlError, PythonDocxError, KeyError, IndexError, ValueError) as error:
+        raise WordCompatibilityError(
+            "无法将此文档的排版写入 DOCX。请下载原文件，用 Word 修改后上传新版本。"
+        ) from error
+
+
+def check_word_save(content, source, max_size):
+    # Empty documents can be opened for the user to add their first paragraph.
+    if len(_word_bytes(content, source, allow_empty=True)) > max_size:
+        raise WordCompatibilityError("生成的 Word 文件超过保存大小限制。请下载修改后上传。")
 
 
 def document_bytes(format_name, content, *, source=None):

@@ -12,8 +12,8 @@ from ...api.auth.controller import page_required
 from ...application.audit.operator_service import operator_names
 from ...application.documents.file_access import (
     presign_browser_get as presign_get,
-    serve_browser_file,
 )
+from ...application.documents.file_access import serve_browser_file
 from ...application.documents.service import (
     CONTENT_TYPES,
     DOCUMENT_STATUSES,
@@ -47,7 +47,7 @@ from ...integrations.storage.minio_adapter import (
     read_object,
     stat_object,
 )
-from ...processors.word.authoring import document_bytes
+from ...processors.word.authoring import check_word_save, document_bytes
 
 documents = Blueprint("documents", __name__, url_prefix="/api/v1")
 
@@ -414,17 +414,30 @@ def _word_version(document_id, version_id):
     return version
 
 
+def _latest_word_base(document_id, version_id):
+    latest_id = db.session.scalar(db.select(DocumentVersion.id).where(
+        DocumentVersion.document_id == document_id,
+    ).order_by(DocumentVersion.version_no.desc()).limit(1))
+    return latest_id == version_id
+
+
 @documents.get("/documents/<uuid:document_id>/word-content")
 @page_required("/documents")
 def get_word_content(document_id):
-    from ...word_import import word_content
+    from ...word_import import word_edit_data
 
     document = _find_document(document_id)
     _find_knowledge_base(document.knowledge_base_id)
     version = _word_version(document.id, request.args.get("version_id") or document.current_version_id)
+    for_edit = request.args.get("for_edit") == "1"
+    if for_edit and not _latest_word_base(document.id, version.id):
+        raise ApiError("此版本已有更新，请选择最新版本后编辑。", 409, 40901)
     content = _api_storage(read_object, version.minio_object_key, bucket=version.minio_bucket,
                            max_size=_max_document_size())
-    return success({"version": _version_data(version), "content": word_content(content)})
+    data = word_edit_data(content)
+    if for_edit:
+        check_word_save(data["content"], content, _max_document_size())
+    return success({"version": _version_data(version), **data})
 
 
 @documents.post("/documents/<uuid:document_id>/word-content")
@@ -453,10 +466,7 @@ def save_word_content(document_id):
                 or audit is None or audit.detail.get("draft_hash") != draft_hash):
             raise ApiError("请求编号已被使用，请重新保存", 409, 40901)
         return success({"document": _document_data(document), "version": _version_data(existing)})
-    latest = db.session.scalar(db.select(DocumentVersion).where(
-        DocumentVersion.document_id == document.id,
-    ).order_by(DocumentVersion.version_no.desc()))
-    if latest is None or latest.id != base_id:
+    if not _latest_word_base(document.id, base_id):
         raise ApiError("文档已产生新版本，请保留当前编辑内容，重新打开最新版本后修改", 409, 40901)
     base = _word_version(document.id, base_id)
     source = _api_storage(read_object, base.minio_object_key, bucket=base.minio_bucket,

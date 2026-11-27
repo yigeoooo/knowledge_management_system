@@ -25,7 +25,7 @@ import {
   Delete,
   RefreshRight,
 } from "@element-plus/icons-vue";
-import { api, uploadFile } from "../lib/session";
+import { api, ApiError, uploadFile } from "../lib/session";
 import { createUuid } from "../lib/uuid";
 import { queryParams } from "../lib/query";
 import WordContent from "../components/WordContent.vue";
@@ -181,7 +181,11 @@ async function discardEdits() {
   return true;
 }
 async function closeDetail(done: () => void) {
-  if (await discardEdits()) done();
+  if (await discardEdits()) {
+    ++detailRequest;
+    ++contentRequest;
+    done();
+  }
 }
 function beforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value || editorBusy.value) {
@@ -195,6 +199,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
 
 let indexPollTimer: number | null = null;
 let indexPollAttempts = 0;
+let detailRequest = 0;
 let contentRequest = 0;
 
 const renderedPreviewHtml = computed(() => {
@@ -443,6 +448,7 @@ async function upload() {
 }
 
 async function openDocument(row: DocumentRow, startEditing = false) {
+  const request = ++detailRequest;
   ++contentRequest;
   detailOpen.value = true;
   detailBusy.value = true;
@@ -451,14 +457,21 @@ async function openDocument(row: DocumentRow, startEditing = false) {
   editing.value = false;
   detail.value = null;
   try {
-    detail.value = await api<DocumentDetail>(`/documents/${row.id}`);
+    const opened = await api<DocumentDetail>(`/documents/${row.id}`);
+    if (request !== detailRequest) return;
+    detail.value = opened;
     selectedVersionId.value = detail.value.current_version_id || detail.value.versions[0]?.id || "";
+    if (startEditing && !canEdit.value && selectedVersion.value) {
+      const format = extension(selectedVersion.value.filename).slice(1).toUpperCase();
+      ElMessage.info(`${format} 文件暂不支持在线编辑，可下载修改后上传新版本。`);
+    }
     await loadVersionContent();
-    if (startEditing && canEdit.value) await beginEdit();
+    if (request === detailRequest && startEditing && canEdit.value && opened.status === "active"
+        && !(isText.value && detailError.value)) await beginEdit();
   } catch (e) {
-    detailError.value = (e as Error).message;
+    if (request === detailRequest) detailError.value = (e as Error).message;
   } finally {
-    detailBusy.value = false;
+    if (request === detailRequest) detailBusy.value = false;
   }
 }
 
@@ -531,6 +544,7 @@ async function loadVersionContent() {
 }
 
 function changeVersion() {
+  detailError.value = "";
   editing.value = false;
   void loadVersionContent();
 }
@@ -553,6 +567,17 @@ async function downloadVersion(version?: Version | null) {
   }
 }
 
+function showEditError(error: unknown) {
+  if (isWord.value && error instanceof ApiError && error.code === 42203) {
+    void ElMessageBox.alert(error.message, editing.value ? "这次修改暂时无法保存" : "此版本暂不支持在线编辑", {
+      type: "warning",
+      confirmButtonText: editing.value ? "返回编辑" : "返回预览",
+    }).catch(() => {});
+    return;
+  }
+  detailError.value = (error as Error).message;
+}
+
 async function beginEdit() {
   if (!detail.value || !selectedVersion.value || !canEdit.value || editorBusy.value) return;
   detailError.value = "";
@@ -562,9 +587,19 @@ async function beginEdit() {
     editBaseId.value = selectedVersion.value.id;
     saveAttempt = null;
     if (isWord.value) {
-      const result = await api<{ content: JSONContent }>(
-        `/documents/${detail.value.id}/word-content?version_id=${editBaseId.value}`
+      const result = await api<{ content: JSONContent; warnings?: string[] }>(
+        `/documents/${detail.value.id}/word-content?version_id=${editBaseId.value}&for_edit=1`,
+        { timeoutMs: 120000 }
       );
+      if (result.warnings?.length) {
+        try {
+          await ElMessageBox.confirm(result.warnings.join("\n"), "编辑前请确认", {
+            type: "warning", confirmButtonText: "继续编辑", cancelButtonText: "返回预览",
+          });
+        } catch {
+          return;
+        }
+      }
       wordContent.value = result.content;
       editBaseline.value = JSON.stringify(result.content);
       wordReady.value = false;
@@ -581,7 +616,7 @@ async function beginEdit() {
     }
     editing.value = true;
   } catch (error) {
-    detailError.value = (error as Error).message;
+    showEditError(error);
   } finally {
     editorBusy.value = false;
     contentBusy.value = false;
@@ -652,7 +687,7 @@ async function saveEdit(): Promise<boolean> {
     startIndexPolling();
     return true;
   } catch (e) {
-    detailError.value = (e as Error).message;
+    showEditError(e);
     return false;
   } finally {
     editorBusy.value = false;
@@ -920,6 +955,7 @@ onBeforeUnmount(stopIndexPolling);
             link
             type="primary"
             :icon="Edit"
+            :disabled="row.status !== 'active'"
             @click="openDocument(row, true)"
           >
             编辑
@@ -1154,7 +1190,7 @@ onBeforeUnmount(stopIndexPolling);
 
       <div
         v-loading="contentBusy"
-        element-loading-text="正在加载文档内容..."
+        :element-loading-text="isWord && editorBusy && !editing ? '正在检查此 Word 能否保存…' : '正在加载文档内容…'"
         class="document-content"
       >
         <template v-if="!contentBusy">

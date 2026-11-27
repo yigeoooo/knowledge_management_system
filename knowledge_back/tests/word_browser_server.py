@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import app as app_fixture
 from docx import Document
+from docx.oxml import OxmlElement
 from flask import Response, request
 from test_word_editing import external_word
 from werkzeug.serving import make_server
@@ -55,7 +56,17 @@ with tempfile.TemporaryDirectory(prefix="kbs-word-browser-") as directory:
 
     @app.get("/fixture/external.docx")
     def fixture():
-        return Response(external_word(), content_type=documents.CONTENT_TYPES[".docx"])
+        payload = external_word()
+        if request.args.get("revisions"):
+            doc = Document(BytesIO(payload))
+            paragraph = doc.add_paragraph()
+            insertion = OxmlElement("w:ins")
+            insertion.append(paragraph.add_run("修订文本")._r)
+            paragraph._p.append(insertion)
+            stream = BytesIO()
+            doc.save(stream)
+            payload = stream.getvalue()
+        return Response(payload, content_type=documents.CONTENT_TYPES[".docx"])
 
     @app.get("/fixture/objects/<path:key>")
     def download(key):
