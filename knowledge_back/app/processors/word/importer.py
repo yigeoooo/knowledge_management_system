@@ -21,6 +21,7 @@ from .numbering import numbering_element
 from .styles import ALIGNMENTS
 
 SNAPSHOT = "/customXml/kbs-editor.xml"
+DEFAULT_WORD_MARGIN_CM = 2.54
 HIGHLIGHTS = {
     "yellow": "#ffff00",
     "green": "#00ff00",
@@ -386,11 +387,16 @@ def word_content(content):
         unsupported("分栏排版")
     landscape = section.orientation == WD_ORIENT.LANDSCAPE
     width, height = section.page_width.cm, section.page_height.cm
+
+    def margin_cm(edge):
+        value = getattr(section, f"{edge}_margin")
+        return value.cm if value is not None else DEFAULT_WORD_MARGIN_CM
+
     page = {
         "size": {"width": height if landscape else width, "height": width if landscape else height},
         "orientation": "landscape" if landscape else "portrait",
         "margin": {
-            edge: getattr(section, f"{edge}_margin").cm
+            edge: margin_cm(edge)
             for edge in ("left", "right", "top", "bottom")
         },
     }

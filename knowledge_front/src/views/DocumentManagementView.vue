@@ -110,6 +110,7 @@ const previewText = ref("");
 const previewHtml = ref("");
 const previewUrl = ref("");
 const previewKind = ref<"text" | "image" | "video" | "pdf" | "excel" | "download">("text");
+const contentBusy = ref(false);
 const editing = ref(false);
 const editorText = ref("");
 const editorBusy = ref(false);
@@ -194,6 +195,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
 
 let indexPollTimer: number | null = null;
 let indexPollAttempts = 0;
+let contentRequest = 0;
 
 const renderedPreviewHtml = computed(() => {
   if (!previewText.value) return "";
@@ -441,8 +443,10 @@ async function upload() {
 }
 
 async function openDocument(row: DocumentRow, startEditing = false) {
+  ++contentRequest;
   detailOpen.value = true;
   detailBusy.value = true;
+  contentBusy.value = false;
   detailError.value = "";
   editing.value = false;
   detail.value = null;
@@ -459,31 +463,43 @@ async function openDocument(row: DocumentRow, startEditing = false) {
 }
 
 async function loadVersionContent() {
-  if (!detail.value || !selectedVersionId.value) return;
+  const request = ++contentRequest;
+  contentBusy.value = true;
   previewText.value = "";
   previewHtml.value = "";
   previewUrl.value = "";
   previewKind.value = "text";
+  if (!detail.value || !selectedVersionId.value) {
+    contentBusy.value = false;
+    return;
+  }
+  const document = detail.value;
   const version = selectedVersion.value;
-  if (!version) return;
+  if (!version) {
+    contentBusy.value = false;
+    return;
+  }
   try {
     if ([".md", ".markdown", ".txt"].includes(extension(version.filename))) {
       const res = await api<{ content: string }>(
-        `/documents/${detail.value.id}/content?version_id=${version.id}`
+        `/documents/${document.id}/content?version_id=${version.id}`
       );
+      if (request !== contentRequest) return;
       previewText.value = res.content;
       editorText.value = res.content;
     } else if (extension(version.filename) === ".docx") {
       const res = await api<{ content: string; html?: string }>(
-        `/documents/${detail.value.id}/text-preview?version_id=${version.id}`
+        `/documents/${document.id}/text-preview?version_id=${version.id}`
       );
+      if (request !== contentRequest) return;
       previewText.value = res.content;
       previewHtml.value = res.html || "";
       previewKind.value = "text";
     } else if ([".xls", ".xlsx"].includes(extension(version.filename))) {
       const res = await api<{ workbook: ExcelWorkbook }>(
-        `/documents/${detail.value.id}/excel-content?version_id=${version.id}`
+        `/documents/${document.id}/excel-content?version_id=${version.id}`
       );
+      if (request !== contentRequest) return;
       excelWorkbook.value = res.workbook;
       excelLatest.value = res.workbook;
       previewKind.value = "excel";
@@ -493,8 +509,9 @@ async function loadVersionContent() {
       )
     ) {
       const res = await api<{ preview_url: string }>(
-        `/documents/${detail.value.id}/preview-url?version_id=${version.id}`
+        `/documents/${document.id}/preview-url?version_id=${version.id}`
       );
+      if (request !== contentRequest) return;
       previewUrl.value = res.preview_url;
       const ext = extension(version.filename);
       if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext))
@@ -503,10 +520,13 @@ async function loadVersionContent() {
       else if (ext === ".pdf") previewKind.value = "pdf";
       else previewKind.value = "download";
     } else {
+      if (request !== contentRequest) return;
       previewKind.value = "download";
     }
   } catch (e) {
-    detailError.value = (e as Error).message;
+    if (request === contentRequest) detailError.value = (e as Error).message;
+  } finally {
+    if (request === contentRequest) contentBusy.value = false;
   }
 }
 
@@ -537,6 +557,7 @@ async function beginEdit() {
   if (!detail.value || !selectedVersion.value || !canEdit.value || editorBusy.value) return;
   detailError.value = "";
   editorBusy.value = true;
+  contentBusy.value = true;
   try {
     editBaseId.value = selectedVersion.value.id;
     saveAttempt = null;
@@ -563,6 +584,7 @@ async function beginEdit() {
     detailError.value = (error as Error).message;
   } finally {
     editorBusy.value = false;
+    contentBusy.value = false;
   }
 }
 
@@ -1068,7 +1090,14 @@ onBeforeUnmount(stopIndexPolling);
       show-icon
     />
     <div
+      v-if="detailBusy && !detail"
+      v-loading="true"
+      element-loading-text="正在加载文档详情..."
+      class="document-dialog document-dialog-loading"
+    ></div>
+    <div
       v-loading="detailBusy"
+      element-loading-text="正在加载文档详情..."
       class="document-dialog"
       v-if="detail"
     >
@@ -1085,7 +1114,7 @@ onBeforeUnmount(stopIndexPolling);
         <div class="document-actions">
           <el-select
             v-model="selectedVersionId"
-            :disabled="editing || editorBusy"
+            :disabled="editing || editorBusy || contentBusy"
             placeholder="选择版本"
             @change="changeVersion"
           >
@@ -1099,7 +1128,7 @@ onBeforeUnmount(stopIndexPolling);
           <el-button
             v-if="detail.status === 'active'"
             :icon="Plus"
-            :disabled="editing || editorBusy"
+            :disabled="editing || editorBusy || contentBusy"
             @click="openReplace"
           >
             上传新版本
@@ -1113,6 +1142,7 @@ onBeforeUnmount(stopIndexPolling);
           <el-button
             v-if="canEdit && !editing && detail.status === 'active'"
             :loading="editorBusy"
+            :disabled="contentBusy"
             type="primary"
             :icon="Edit"
             @click="beginEdit"
@@ -1122,104 +1152,118 @@ onBeforeUnmount(stopIndexPolling);
         </div>
       </div>
 
-      <section
-        v-if="editing && isWord"
-        class="word-edit-panel"
+      <div
+        v-loading="contentBusy"
+        element-loading-text="正在加载文档内容..."
+        class="document-content"
       >
-        <p>编辑 DOCX 正文，保存为新版本。原版本可在版本历史中下载。</p>
-        <WordEditor
-          :key="editBaseId"
-          :content="wordContent"
-          :title="detail.title"
-          :disabled="editorBusy"
-          :save-document="saveEdit"
-          @change="updateWord"
-        />
-      </section>
-      <section
-        v-else-if="editing && isExcel"
-        class="excel-edit-panel"
-      >
-        <p>编辑 Excel 工作簿，保存为新版本。原版本可在版本历史中下载。</p>
-        <ExcelEditor
-          ref="excelEditor"
-          :key="editBaseId"
-          :workbook="excelWorkbook"
-          :title="detail.title"
-          :disabled="editorBusy"
-          @change="updateExcel"
-        />
-        <!-- <div class="excel-edit-actions">
-          <el-button
-            type="primary"
-            :loading="editorBusy"
-            @click="saveEdit"
+        <template v-if="!contentBusy">
+          <section
+            v-if="editing && isWord"
+            class="word-edit-panel"
           >
-            保存 Excel 新版本
-          </el-button>
-        </div> -->
-      </section>
-      <div
-        v-else-if="editing"
-        class="editor-layout"
-      >
-        <el-input
-          v-model="editorText"
-          type="textarea"
-          :rows="20"
-          resize="none"
-        />
-        <div class="markdown-preview">
-          <div class="preview-label">实时预览</div>
+            <p>编辑 DOCX 正文，保存为新版本。原版本可在版本历史中下载。</p>
+            <Suspense>
+              <WordEditor
+                :key="editBaseId"
+                :content="wordContent"
+                :title="detail.title"
+                :disabled="editorBusy"
+                :save-document="saveEdit"
+                @change="updateWord"
+              />
+              <template #fallback>
+                <div class="document-content-loading">正在加载 Word 编辑器...</div>
+              </template>
+            </Suspense>
+          </section>
+          <section
+            v-else-if="editing && isExcel"
+            class="excel-edit-panel"
+          >
+            <p>编辑 Excel 工作簿，保存为新版本。原版本可在版本历史中下载。</p>
+            <Suspense>
+              <ExcelEditor
+                ref="excelEditor"
+                :key="editBaseId"
+                :workbook="excelWorkbook"
+                :title="detail.title"
+                :disabled="editorBusy"
+                @change="updateExcel"
+              />
+              <template #fallback>
+                <div class="document-content-loading">正在加载 Excel 编辑器...</div>
+              </template>
+            </Suspense>
+          </section>
           <div
-            class="markdown-body"
-            v-html="renderedEditorPreviewHtml"
-          ></div>
-        </div>
-      </div>
+            v-else-if="editing"
+            class="editor-layout"
+          >
+            <el-input
+              v-model="editorText"
+              type="textarea"
+              :rows="20"
+              resize="none"
+            />
+            <div class="markdown-preview">
+              <div class="preview-label">实时预览</div>
+              <div
+                class="markdown-body"
+                v-html="renderedEditorPreviewHtml"
+              ></div>
+            </div>
+          </div>
 
-      <WordContent
-        v-else-if="previewKind === 'text' && previewHtml"
-        class="document-preview"
-        :html="previewHtml"
-      />
-      <div
-        v-else-if="previewKind === 'text'"
-        class="markdown-body document-preview"
-        v-html="renderedPreviewHtml"
-      ></div>
-      <section
-        v-else-if="previewKind === 'excel'"
-        class="excel-preview"
-      >
-        <ExcelEditor
-          :workbook="excelWorkbook"
-          :title="detail.title"
-          readonly
-        />
-      </section>
-      <img
-        v-else-if="previewKind === 'image'"
-        class="file-preview-image"
-        :src="previewUrl"
-        alt="文档预览"
-      />
-      <video
-        v-else-if="previewKind === 'video'"
-        class="file-preview-video"
-        controls
-        :src="previewUrl"
-      ></video>
-      <iframe
-        v-else-if="previewKind === 'pdf'"
-        class="file-preview-frame"
-        :src="previewUrl"
-        title="PDF预览"
-      ></iframe>
-      <el-empty
-        v-else
-        description="该类型暂不支持在线预览，请下载后查看"
-      />
+          <WordContent
+            v-else-if="previewKind === 'text' && previewHtml"
+            class="document-preview"
+            :html="previewHtml"
+          />
+          <div
+            v-else-if="previewKind === 'text'"
+            class="markdown-body document-preview"
+            v-html="renderedPreviewHtml"
+          ></div>
+          <section
+            v-else-if="previewKind === 'excel'"
+            class="excel-preview"
+          >
+            <Suspense>
+              <ExcelEditor
+                :workbook="excelWorkbook"
+                :title="detail.title"
+                readonly
+              />
+              <template #fallback>
+                <div class="document-content-loading">正在加载 Excel 预览...</div>
+              </template>
+            </Suspense>
+          </section>
+          <img
+            v-else-if="previewKind === 'image'"
+            class="file-preview-image"
+            :src="previewUrl"
+            alt="文档预览"
+          />
+          <video
+            v-else-if="previewKind === 'video'"
+            class="file-preview-video"
+            controls
+            :src="previewUrl"
+          ></video>
+          <iframe
+            v-else-if="previewKind === 'pdf'"
+            class="file-preview-frame"
+            :src="previewUrl"
+            title="PDF预览"
+          ></iframe>
+          <el-empty
+            v-else
+            description="该类型暂不支持在线预览，请下载后查看"
+          />
+        </template>
+      </div>
 
       <el-divider />
       <h3>版本历史</h3>
@@ -1298,6 +1342,18 @@ onBeforeUnmount(stopIndexPolling);
 <style scoped>
 .document-dialog {
   min-height: calc(100vh - 140px);
+}
+.document-dialog-loading {
+  min-height: 60vh;
+}
+.document-content {
+  min-height: 320px;
+}
+.document-content-loading {
+  display: grid;
+  min-height: 320px;
+  place-items: center;
+  color: #8a8f98;
 }
 .document-meta {
   display: flex;

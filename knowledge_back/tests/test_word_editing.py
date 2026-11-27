@@ -118,6 +118,24 @@ def test_edit_docx_without_optional_numbering_part(add_list):
     assert Docx(BytesIO(original)).paragraphs[0].text == "景区介绍"
 
 
+def test_import_docx_without_page_margin_uses_word_defaults():
+    doc = Docx()
+    section = doc.sections[0]
+    section._sectPr.remove(section._sectPr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pgMar"))
+    doc.add_paragraph("没有显式页面边距的文档")
+    source = BytesIO()
+    doc.save(source)
+
+    content = word_content(source.getvalue())
+
+    assert content["attrs"]["page"]["margin"] == {
+        "left": pytest.approx(2.54),
+        "right": pytest.approx(2.54),
+        "top": pytest.approx(2.54),
+        "bottom": pytest.approx(2.54),
+    }
+
+
 def test_unsupported_content_is_explicit_instead_of_silently_discarded():
     doc = Docx()
     doc.add_paragraph("正文").add_run()._r.append(OxmlElement("w:drawing"))
